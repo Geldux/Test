@@ -1,0 +1,5 @@
+{
+  "installCommand": "cd fuel-tracker && npm install",
+  "buildCommand": "cd fuel-tracker && npm run build",
+  "outputDirectory": "fuel-tracker/dist"
+}
