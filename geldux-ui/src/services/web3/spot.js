@@ -7,187 +7,115 @@
  * No UI wiring.
  *
  * Public API
- *   spotBuy(sym, amt, setStep, slippage)   buy `amt` USD worth of `sym`
- *   spotSell(sym, amt, setStep, slippage)  sell `amt` tokens of `sym`
+ *   spotBuy(sym, amt, setStep, slippage)   buy amt USD worth of sym
+ *   spotSell(sym, amt, setStep, slippage)  sell amt tokens of sym
  *   checkSpotLiquidity(sym)                'ok' | 'empty'
  */
 
-import { parseUnits, formatUnits, Contract } from 'ethers'
-import { ADDRESSES, MARKET_KEYS, USDC_DECIMALS } from './config.js'
+import { parseUnits, Contract } from 'ethers'
+import { ADDRESSES, MARKET_KEYS } from './config.js'
 import { ABI_SPOT } from './contracts.js'
-import { getReadProvider, cSPOT, cTKN } from './wallet.js'
-import { submitPythUpdate } from './oracle.js'
+import { getReadProvider, cSPOT } from './wallet.js'
+import { pollPyth, submitPythUpdate } from './oracle.js'
 import { waitTx, doApprove } from './tx.js'
 
-// Token addresses indexed by spot-sell symbol.
-const TOKEN_ADDRESS = {
-  ETH:  ADDRESSES.ETHT,
-  SOL:  ADDRESSES.SOLT,
-  BSLV: ADDRESSES.BSLV,
-}
-
 // ── spotBuy ───────────────────────────────────────────────────────────────
-// Buys `amt` USD worth of `sym` on SpotDEX.
-//
-// Steps (mirrors legacy spotBuy):
-//   1  parseUnits — truncate to 6 dp, encode as 18-decimal raw value
-//   2  doApprove  — approve SPOT for raw USDC spend
-//   3  Freshness  — SpotDEX.quote() via read provider; any revert = stale
-//   4  Pyth push  — submitPythUpdate() if price is stale (unawaited)
-//   5  buy()      — gasLimit 280 000, minOut computed from slippage
-//   6  waitTx     — poll receipt via Alchemy
-//
-// `setStep` is a UI callback (step number string); callers may pass a no-op.
-// `slippage` is a percentage (default 0.5 %).
-//
-// Mirrors legacy async function spotBuy(sym, amt, slippage).
+// Mirrors legacy async function spotBuy(sym, amt, setStep).
+// slippage param replaces legacy global sett.slippage (default 0.5 %).
 
-export async function spotBuy(sym, amt, setStep = () => {}, slippage = 0.5) {
-  const key = MARKET_KEYS[sym]
-  if (!key) throw new Error(`[spot] Unknown symbol: ${sym}`)
+export async function spotBuy(sym, amt, setStep, slippage) {
+  var step = setStep || function () {}
+  var _slip = (slippage != null ? slippage : 0.5)
+  var key = MARKET_KEYS[sym]
+  var raw = parseUnits(Number(amt).toFixed(6), 18) /* Always 18 dec for USDC */
 
-  setStep('1')
-
-  // Truncate to 6 decimal places to avoid precision errors, then encode as 18-dec.
-  const raw = parseUnits(Number(amt).toFixed(6), USDC_DECIMALS)
-
-  setStep('2')
+  step('Approving USDC...')
   await doApprove(ADDRESSES.SPOT, raw)
 
-  setStep('3')
+  step('Updating price oracle...')
+  await pollPyth().catch(function () {})
 
-  // Freshness check — quote() reverts when Pyth price is stale.
-  let fresh = false
+  /* Skip Pyth update if on-chain price is already fresh — saves a wallet prompt */
+  var _sfresh = false
   try {
-    const rp = getReadProvider()
-    if (rp) {
-      const rc = new Contract(ADDRESSES.SPOT, ABI_SPOT, rp)
-      await rc.quote(key, true, raw)
-      fresh = true
+    var _srp = getReadProvider()
+    if (_srp) {
+      var _srC = new Contract(ADDRESSES.SPOT, ABI_SPOT, _srp)
+      await _srC.quote(key, true, parseUnits('1', 18))
+      _sfresh = true
     }
-  } catch (_e) {
-    fresh = false
-  }
+  } catch (_) {}
+  if (!_sfresh) await submitPythUpdate()
 
-  if (!fresh) {
-    setStep('4')
-    await submitPythUpdate()  // intentionally not awaited further — nonce ordering
-  }
-
-  setStep('5')
-
-  // min-out: clamp slippage factor to [50, 200] bps range, then scale by 10 000.
-  const bpsFactor = BigInt(
-    Math.max(50, Math.min(200, Math.floor((1 - slippage / 100) * 10000))),
-  )
-  // quote() to get expected out, then apply bps
-  let minOut = 0n
+  var min = BigInt(0)
   try {
-    const rp = getReadProvider()
-    if (rp) {
-      const rc  = new Contract(ADDRESSES.SPOT, ABI_SPOT, rp)
-      const [out] = await rc.quote(key, true, raw)
-      minOut = (out * bpsFactor) / 10000n
-    }
-  } catch (_e) {
-    minOut = 0n
-  }
+    var q = await cSPOT().quote(key, true, raw)
+    var slip = BigInt(Math.max(50, Math.min(200, Math.floor((1 - _slip / 100) * 10000))))
+    min = q[0] * slip / BigInt(10000)
+  } catch (er) {}
 
-  const tx      = await cSPOT().buy(key, raw, minOut, { gasLimit: 280000 })
-  setStep('6')
-  const receipt = await waitTx(tx)
-  return receipt
+  step('Submitting buy...')
+  var tx = await cSPOT().buy(key, raw, min, { gasLimit: 280000 }) /* skip estimateGas */
+
+  step('Confirming on Base...')
+  await waitTx(tx)
+  return tx.hash
 }
 
 // ── spotSell ──────────────────────────────────────────────────────────────
-// Sells `amt` tokens of `sym` on SpotDEX.
-//
-// Steps (mirrors legacy spotSell):
-//   1  token address lookup (ETH→ETHT, SOL→SOLT, else BSLV)
-//   2  parseUnits — truncate to 8 dp, encode as 18-decimal raw value
-//   3  doApprove  — approve SPOT for token spend
-//   4  Freshness  — SpotDEX.quote() via read provider
-//   5  Pyth push  — submitPythUpdate() if stale
-//   6  sell()     — gasLimit 280 000, minOut from slippage
-//   7  waitTx     — poll receipt
-//
-// Mirrors legacy async function spotSell(sym, amt, slippage).
+// Mirrors legacy async function spotSell(sym, amt, setStep).
+// slippage param replaces legacy global sett.slippage (default 0.5 %).
 
-export async function spotSell(sym, amt, setStep = () => {}, slippage = 0.5) {
-  const key     = MARKET_KEYS[sym]
-  const tokAddr = TOKEN_ADDRESS[sym]
-  if (!key)     throw new Error(`[spot] Unknown symbol: ${sym}`)
-  if (!tokAddr) throw new Error(`[spot] No token address for: ${sym}`)
+export async function spotSell(sym, amt, setStep, slippage) {
+  var step = setStep || function () {}
+  var _slip = (slippage != null ? slippage : 0.5)
+  var key = MARKET_KEYS[sym]
+  var ta = sym === 'ETH' ? ADDRESSES.ETHT : sym === 'SOL' ? ADDRESSES.SOLT : ADDRESSES.BSLV
 
-  setStep('1')
+  /* amt is token quantity entered by user directly */
+  var raw = parseUnits(Number(amt).toFixed(8), 18) /* tokens in 18-decimal */
 
-  // Truncate to 8 decimal places for token amounts.
-  const raw = parseUnits(Number(amt).toFixed(8), 18)
+  step('Approving token...')
+  await doApprove(ADDRESSES.SPOT, raw, ta)
 
-  setStep('2')
-  await doApprove(ADDRESSES.SPOT, raw, tokAddr)
+  step('Updating price oracle...')
+  await pollPyth().catch(function () {})
 
-  setStep('3')
-
-  let fresh = false
+  var _sfresh2 = false
   try {
-    const rp = getReadProvider()
-    if (rp) {
-      const rc = new Contract(ADDRESSES.SPOT, ABI_SPOT, rp)
-      await rc.quote(key, false, raw)
-      fresh = true
+    var _srp2 = getReadProvider()
+    if (_srp2) {
+      var _srC2 = new Contract(ADDRESSES.SPOT, ABI_SPOT, _srp2)
+      await _srC2.quote(key, false, parseUnits('1', 18))
+      _sfresh2 = true
     }
-  } catch (_e) {
-    fresh = false
-  }
+  } catch (_) {}
+  if (!_sfresh2) await submitPythUpdate()
 
-  if (!fresh) {
-    setStep('4')
-    await submitPythUpdate()
-  }
-
-  setStep('5')
-
-  const bpsFactor = BigInt(
-    Math.max(50, Math.min(200, Math.floor((1 - slippage / 100) * 10000))),
-  )
-  let minOut = 0n
+  var min = BigInt(0)
   try {
-    const rp = getReadProvider()
-    if (rp) {
-      const rc    = new Contract(ADDRESSES.SPOT, ABI_SPOT, rp)
-      const [out] = await rc.quote(key, false, raw)
-      minOut      = (out * bpsFactor) / 10000n
-    }
-  } catch (_e) {
-    minOut = 0n
-  }
+    var q = await cSPOT().quote(key, false, raw)
+    var slip = BigInt(Math.max(50, Math.min(200, Math.floor((1 - _slip / 100) * 10000))))
+    min = q[0] * slip / BigInt(10000)
+  } catch (er) {}
 
-  const tx      = await cSPOT().sell(key, raw, minOut, { gasLimit: 280000 })
-  setStep('6')
-  const receipt = await waitTx(tx)
-  return receipt
+  step('Submitting sell...')
+  var tx = await cSPOT().sell(key, raw, min, { gasLimit: 280000 }) /* skip estimateGas */
+
+  step('Confirming on Base...')
+  await waitTx(tx)
+  return tx.hash
 }
 
 // ── checkSpotLiquidity ────────────────────────────────────────────────────
-// Returns 'empty' if the SpotDEX pool for `sym` has no base-token liquidity,
-// 'ok' otherwise.
-//
-// Uses the read provider so no wallet connection is needed.
-// Mirrors legacy async function checkLiquidity(sym) [spot path].
+// Spot path of legacy async function checkLiquidity(sym, mode).
 
 export async function checkSpotLiquidity(sym) {
-  const key = MARKET_KEYS[sym]
-  if (!key) return 'empty'
-
   try {
-    const rp = getReadProvider()
-    if (!rp) return 'empty'
-
-    const rc  = new Contract(ADDRESSES.SPOT, ABI_SPOT, rp)
-    const liq = await rc.getLiquidity(key)
-    return liq[0] === 0n ? 'empty' : 'ok'
-  } catch (_e) {
-    return 'empty'
-  }
+    var key = MARKET_KEYS[sym]
+    /* Use getLiquidity (more reliable than quote for liquidity checks) */
+    var liq = await cSPOT().getLiquidity(key)
+    if (!liq || liq[0] === BigInt(0)) return 'empty'
+    return 'ok'
+  } catch (er) { return 'empty' }
 }

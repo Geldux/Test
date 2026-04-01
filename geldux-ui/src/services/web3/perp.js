@@ -12,190 +12,114 @@
  *   checkPerpLiquidity()                          'ok' | 'empty'
  */
 
-import { parseUnits, formatUnits, Interface, Contract } from 'ethers'
+import { parseUnits, formatUnits, Interface } from 'ethers'
 import { ADDRESSES, MARKET_KEYS, USDC_DECIMALS } from './config.js'
 import { ABI_PERP } from './contracts.js'
-import { getReadProvider, cPERP, cUSDC } from './wallet.js'
+import { cPERP, cUSDC } from './wallet.js'
 import { pollPyth, getEncodedVaas, isPythFresh, submitPythUpdate } from './oracle.js'
 import { waitTx, doApprove } from './tx.js'
 
-// Pre-built interface for log parsing (avoids repeated construction).
-const _perpIface = new Interface(ABI_PERP)
-
 // ── perpOpen ──────────────────────────────────────────────────────────────
-// Opens a leveraged perpetual position.
-//
-// Steps (mirrors legacy perpOpen):
-//   1  assetActive check — throws 'Market inactive' if contract confirms inactive;
-//                          continues on RPC error (don't block on degraded RPC)
-//   2  doApprove         — approve PERP for raw USDC collateral
-//   3  getEncodedVaas()  — throws 'Cannot fetch Pyth price' if null
-//   4  isPythFresh check — uses 1-tx path (gasLimit 300 000) if fresh,
-//                          2-tx path (submitPythUpdate then open, 350 000) if stale
-//   5  open()            — parse posId from Opened event log
-//   6  waitTx            — poll receipt
-//
-// Returns { hash, posId } on success.
-// `setStep` is a UI callback (step number string); callers may pass a no-op.
-//
-// Mirrors legacy async function perpOpen(sym, isLong, lev, colUSD).
+// Mirrors legacy async function perpOpen(sym, isLong, lev, colUSD, setStep).
 
-export async function perpOpen(sym, isLong, lev, colUSD, setStep = () => {}) {
-  const key = MARKET_KEYS[sym]
-  if (!key) throw new Error(`[perp] Unknown symbol: ${sym}`)
+export async function perpOpen(sym, isLong, lev, colUSD, setStep) {
+  var step = setStep || function () {}
+  var key = MARKET_KEYS[sym]
+  var raw = parseUnits(String(Number(colUSD).toFixed(6)), USDC_DECIMALS)
 
-  setStep('1')
-
-  // assetActive — throw only on confirmed false; ignore RPC errors.
+  /* Pre-check: is this market active on-chain? Saves user a failed tx + gas */
+  step('Checking market...')
   try {
-    const rp = getReadProvider()
-    if (rp) {
-      const rc     = new Contract(ADDRESSES.PERP, ABI_PERP, rp)
-      const active = await rc.assetActive(key)
-      if (!active) throw new Error('Market inactive')
-    }
-  } catch (er) {
-    if (er.message === 'Market inactive') throw er
-    // other RPC errors — continue
+    var isActive = await cPERP().assetActive(key)
+    if (!isActive) throw new Error('Market inactive: ' + sym + ' perp is not enabled on-chain. Contact admin to run addAsset().')
+  } catch (ce) {
+    if (ce.message && ce.message.indexOf('Market inactive') >= 0) throw ce
+    /* If read fails (RPC issue), continue anyway */
+    console.warn('assetActive check failed:', ce.message)
   }
 
-  setStep('2')
-
-  const raw = parseUnits(Number(colUSD).toFixed(6), USDC_DECIMALS)
+  step('Approving USDC...')
   await doApprove(ADDRESSES.PERP, raw)
 
-  setStep('3')
+  step('Checking price...')
+  var enc = await getEncodedVaas()
+  if (!enc) throw new Error('Cannot fetch Pyth price. Check internet and retry.')
 
-  const enc = await getEncodedVaas()
-  if (!enc) throw new Error('Cannot fetch Pyth price. Try again.')
-
-  const fresh = await isPythFresh(key)
-
-  let tx
-  if (fresh) {
-    setStep('4')
-    tx = await cPERP().open(key, isLong, lev, raw, { gasLimit: 300000 })
+  /* Check if price is already fresh on-chain — skip Pyth tx if so (1 prompt instead of 2) */
+  var _fresh = await isPythFresh(key)
+  if (!_fresh) {
+    step('Updating price (1/2)...')
+    await submitPythUpdate() /* nonce N — waits for nonce ordering */
+    step('Submitting trade (2/2)...')
   } else {
-    setStep('4')
-    await submitPythUpdate()   // unawaited in the contract sense — waitTx handles it
-    setStep('5')
-    tx = await cPERP().open(key, isLong, lev, raw, { gasLimit: 350000 })
+    step('Submitting trade...')
   }
 
-  setStep('6')
-  const receipt = await waitTx(tx)
-
-  // Parse posId from the Opened event in the receipt logs.
-  let posId = null
-  try {
-    for (const log of receipt.logs || []) {
-      const parsed = _perpIface.parseLog(log)
-      if (parsed && parsed.name === 'Opened') {
-        posId = parsed.args[0].toString()
-        break
-      }
-    }
-  } catch (_e) {
-    // posId remains null — caller may handle
+  var tx = await cPERP().open(key, isLong, lev, raw, { gasLimit: _fresh ? 300000 : 350000 })
+  step('Confirming on Base...')
+  var rc = await waitTx(tx)
+  var logs = (rc && rc.logs) || []
+  var iface = new Interface(ABI_PERP)
+  for (var i = 0; i < logs.length; i++) {
+    try {
+      var p = iface.parseLog(logs[i])
+      if (p && p.name === 'Opened') return { hash: tx.hash, posId: Number(p.args[0]) }
+    } catch (er) {}
   }
-
-  return { hash: receipt.transactionHash || tx.hash, posId }
+  return { hash: tx.hash, posId: null }
 }
 
 // ── perpClose ─────────────────────────────────────────────────────────────
-// Closes position `posId`.
-//
-// Steps (mirrors legacy perpClose):
-//   1  pollPyth()     — soft refresh (errors swallowed)
-//   2  getPosition()  — fetch assetKey for the given posId
-//   3  isPythFresh()  — submitPythUpdate() if stale
-//   4  close() retry  — up to 3 attempts; retries on 429/rate-limit/
-//                       coalesce/UNKNOWN_ERROR with `4000 + att*2000` ms delay
-//
-// Returns the transaction hash on success.
-// Throws a descriptive error for common failure modes (missing revert data,
-// estimateGas failures).
-//
 // Mirrors legacy async function perpClose(posId).
 
 export async function perpClose(posId) {
-  // Soft-refresh prices — errors must not block close.
-  await pollPyth().catch(() => {})
+  await pollPyth().catch(function () {})
 
-  // Resolve assetKey for this position.
-  let assetKey
+  /* Only push Pyth update if price is stale — otherwise close is 1 tx */
+  /* We need to find the posId's assetKey to check freshness */
+  var _keyForClose = null
   try {
-    const rp = getReadProvider()
-    if (rp) {
-      const rc = new Contract(ADDRESSES.PERP, ABI_PERP, rp)
-      const p  = await rc.getPosition(posId)
-      assetKey = p[1]
-    }
-  } catch (_e) {
-    // proceed without freshness check
+    var _gp = await cPERP().getPosition(posId)
+    if (_gp && _gp[1]) _keyForClose = _gp[1]
+  } catch (_) {}
+  var _closeFresh = _keyForClose ? await isPythFresh(_keyForClose) : false
+  if (!_closeFresh) {
+    await submitPythUpdate() /* nonce N — submit without waiting */
   }
 
-  if (assetKey) {
-    const fresh = await isPythFresh(assetKey)
-    if (!fresh) {
-      await submitPythUpdate()
-    }
-  }
-
-  // Retry loop — up to 3 attempts.
-  const MAX_ATTEMPTS = 3
-  let txSent = null
-
-  for (let att = 1; att <= MAX_ATTEMPTS; att++) {
+  var lastErr, txSent = null
+  for (var att = 0; att < 3; att++) {
     try {
-      const tx = await cPERP().close(posId, { gasLimit: 300000 })
-      txSent = tx
-      break
+      var tx = await cPERP().close(posId, { gasLimit: 300000 }) /* skip estimateGas - pyth pending */
+      txSent = tx.hash
+      await waitTx(tx)
+      return tx.hash
     } catch (er) {
-      const msg  = (er.message || '').toLowerCase()
-      const code = er.code || ''
-
-      // Unrecoverable: contract explicitly reverted with reason.
-      if (msg.includes('missing revert data') || msg.includes('estimategas')) {
-        throw new Error(
-          'Position already closed or liquidated. Refresh your positions.',
-        )
+      lastErr = er
+      var raw = er && er.message || ''
+      var retry = raw.indexOf('429') >= 0 || raw.indexOf('rate limit') >= 0 || raw.indexOf('coalesce') >= 0 || raw.indexOf('UNKNOWN_ERROR') >= 0
+      if (retry && att < 2) { await new Promise(function (r) { setTimeout(r, 4000 + att * 2000) }); continue }
+      if (txSent) return txSent
+      /* estimateGas failure = contract issue, not RPC */
+      var raw2 = er && er.message || ''
+      if (raw2.indexOf('missing revert data') >= 0 || raw2.indexOf('estimateGas') >= 0) {
+        throw new Error('Close rejected by contract. Position may already be closed or contract has insufficient funds. Check Portfolio.')
       }
-
-      const retryable =
-        msg.includes('429') ||
-        msg.includes('rate limit') ||
-        msg.includes('coalesce') ||
-        code === 'UNKNOWN_ERROR'
-
-      if (!retryable || att === MAX_ATTEMPTS) throw er
-
-      const delay = 4000 + att * 2000
-      await new Promise((r) => setTimeout(r, delay))
+      throw er
     }
   }
-
-  if (!txSent) throw new Error('[perp] close: no transaction sent')
-
-  const receipt = await waitTx(txSent)
-  return receipt.transactionHash || txSent.hash
+  if (txSent) return txSent
+  throw lastErr || new Error('Close failed')
 }
 
 // ── checkPerpLiquidity ────────────────────────────────────────────────────
-// Returns 'empty' if the PerpDEX insurance fund / USDC pool has < 10 USDC,
-// 'ok' otherwise.
-//
-// Mirrors legacy async function checkLiquidity() [perp path].
+// Perp path of legacy async function checkLiquidity(sym, mode).
 
 export async function checkPerpLiquidity() {
   try {
-    const rp = getReadProvider()
-    if (!rp) return 'empty'
-
-    const rc  = new Contract(ADDRESSES.USDC, ['function balanceOf(address) view returns (uint256)'], rp)
-    const bal = await rc.balanceOf(ADDRESSES.PERP)
-    return Number(formatUnits(bal, USDC_DECIMALS)) < 10 ? 'empty' : 'ok'
-  } catch (_e) {
-    return 'empty'
-  }
+    var perpBal = await cUSDC().balanceOf(ADDRESSES.PERP)
+    var perpUSD = Number(formatUnits(perpBal, USDC_DECIMALS))
+    if (perpUSD < 10) return 'empty'
+    return 'ok'
+  } catch (er) { return 'empty' }
 }

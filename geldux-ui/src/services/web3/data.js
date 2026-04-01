@@ -7,305 +7,177 @@
  * No UI wiring.
  *
  * Public API
- *   loadBal()                  fetch token balances for the connected account
- *   loadPos()                  fetch open perpetual positions
- *   loadPts()                  fetch points / referral info
- *   regPts(myCode, refCode)    register referral code
- *   claimFaucet()              claim testnet faucet
- *   getFauCd()                 get faucet cooldown seconds remaining
+ *   loadBal()                   fetch token balances for the connected account
+ *   loadPos()                   fetch open perpetual positions
+ *   loadPts()                   fetch points / referral info
+ *   regPts(myCode, refCode)     register a referral code
+ *   claimFaucet()               claim testnet faucet tokens
+ *   getFauCd()                  get faucet cooldown seconds remaining
  */
 
 import {
-  Contract,
   formatUnits,
+  formatEther,
   encodeBytes32String,
   decodeBytes32String,
   ZeroHash,
 } from 'ethers'
-import {
-  ADDRESSES,
-  MARKET_KEYS,
-  USDC_DECIMALS,
-  ALCHEMY_RPC,
-} from './config.js'
-import { ABI_ERC20, ABI_PERP, ABI_FAUCET, ABI_PTS } from './contracts.js'
-import { getReadProvider, getAccount, cPTS, cFAU } from './wallet.js'
+import { ADDRESSES, MARKET_KEYS, USDC_DECIMALS, ALCHEMY_RPC } from './config.js'
+import { getAccount, cUSDC, cPERP, cPTS, cFAU, cTKN } from './wallet.js'
 import { waitTx } from './tx.js'
 
-// Reverse map: market key hex → symbol name.
-// Built once at module load from MARKET_KEYS.
-const KEY_TO_SYM = Object.fromEntries(
-  Object.entries(MARKET_KEYS).map(([sym, key]) => [key, sym]),
-)
-
 // ── alchemyGetTokenBalances (private) ─────────────────────────────────────
-// Fetches token balances for `account` via Alchemy's `alchemy_getTokenBalances`
-// JSON-RPC method.  Returns null on any error.
-//
-// Mirrors legacy async function alchemyGetTokenBalances(account).
+// Mirrors legacy async function alchemyGetTokenBalances(addr).
 
-async function _alchemyGetTokenBalances(account) {
-  const tokens = [ADDRESSES.USDC, ADDRESSES.ETHT, ADDRESSES.SOLT, ADDRESSES.BSLV]
+async function alchemyGetTokenBalances(addr) {
+  if (!addr) return null
   try {
-    const resp = await fetch(ALCHEMY_RPC, {
-      method:  'POST',
+    var body = {
+      id: 1, jsonrpc: '2.0', method: 'alchemy_getTokenBalances',
+      params: [addr, [ADDRESSES.USDC, ADDRESSES.ETHT, ADDRESSES.SOLT, ADDRESSES.BSLV]]
+    }
+    var r = await fetch(ALCHEMY_RPC, {
+      method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({
-        jsonrpc: '2.0',
-        id:      1,
-        method:  'alchemy_getTokenBalances',
-        params:  [account, tokens],
-      }),
-      signal: AbortSignal.timeout(6000),
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(5000)
     })
-    if (!resp.ok) return null
-    const data = await resp.json()
-    return data?.result?.tokenBalances ?? null
-  } catch (_e) {
-    return null
+    if (!r.ok) return null
+    var d = await r.json()
+    if (!d.result || !d.result.tokenBalances) return null
+    var out = { USDC: 0, ETH_TKN: 0, SOL_TKN: 0, BSLV: 0 }
+    d.result.tokenBalances.forEach(function (tb) {
+      var hex = tb.tokenBalance
+      if (!hex || hex === '0x') return
+      var val = Number(BigInt(hex))
+      if (tb.contractAddress.toLowerCase() === ADDRESSES.USDC.toLowerCase())
+        out.USDC = val / 1e18  /* 18 decimals */
+      else if (tb.contractAddress.toLowerCase() === ADDRESSES.ETHT.toLowerCase())
+        out.ETH_TKN = val / 1e18
+      else if (tb.contractAddress.toLowerCase() === ADDRESSES.SOLT.toLowerCase())
+        out.SOL_TKN = val / 1e18
+      else if (tb.contractAddress.toLowerCase() === ADDRESSES.BSLV.toLowerCase())
+        out.BSLV = val / 1e18
+    })
+    return out
+  } catch (e) {
+    console.warn('[AlchemyToken]', e.message)
+    return null /* caller falls back to contract reads */
   }
 }
 
 // ── loadBal ───────────────────────────────────────────────────────────────
-// Returns token balances for the connected account as human-readable numbers:
-//   { USDC, ETH_TKN, SOL_TKN, BSLV }
-//
-// Primary: Alchemy `alchemy_getTokenBalances` batch call.
-// Fallback: individual `balanceOf()` calls via read provider.
-//
 // Mirrors legacy async function loadBal().
 
 export async function loadBal() {
-  const account = getAccount()
-  if (!account) throw new Error('[data] Wallet not connected')
+  var account = getAccount()
+  if (!account) return { USDC: 0, ETH_TKN: 0, SOL_TKN: 0, BSLV: 0 }
 
-  const rp = getReadProvider()
-
-  // ── Primary: Alchemy batch ────────────────────────────────────────────
-  const alchemyBals = await _alchemyGetTokenBalances(account)
-
-  if (alchemyBals) {
-    const tokens = [ADDRESSES.USDC, ADDRESSES.ETHT, ADDRESSES.SOLT, ADDRESSES.BSLV]
-    const keys   = ['USDC', 'ETH_TKN', 'SOL_TKN', 'BSLV']
-    const result = {}
-
-    for (let i = 0; i < tokens.length; i++) {
-      const entry = alchemyBals.find(
-        (b) => b.contractAddress?.toLowerCase() === tokens[i].toLowerCase(),
-      )
-      const raw = entry ? BigInt(entry.tokenBalance ?? '0x0') : 0n
-      result[keys[i]] = Number(formatUnits(raw, USDC_DECIMALS))
-    }
-
-    return result
-  }
-
-  // ── Fallback: individual balanceOf ────────────────────────────────────
-  if (!rp) throw new Error('[data] No read provider available')
-
-  const contracts = {
-    USDC:    new Contract(ADDRESSES.USDC,  ABI_ERC20, rp),
-    ETH_TKN: new Contract(ADDRESSES.ETHT,  ABI_ERC20, rp),
-    SOL_TKN: new Contract(ADDRESSES.SOLT,  ABI_ERC20, rp),
-    BSLV:    new Contract(ADDRESSES.BSLV,  ABI_ERC20, rp),
-  }
-
-  const [usdcRaw, ethRaw, solRaw, bslvRaw] = await Promise.all([
-    contracts.USDC.balanceOf(account),
-    contracts.ETH_TKN.balanceOf(account),
-    contracts.SOL_TKN.balanceOf(account),
-    contracts.BSLV.balanceOf(account),
-  ])
-
-  return {
-    USDC:    Number(formatUnits(usdcRaw,  USDC_DECIMALS)),
-    ETH_TKN: Number(formatUnits(ethRaw,   18)),
-    SOL_TKN: Number(formatUnits(solRaw,   18)),
-    BSLV:    Number(formatUnits(bslvRaw,  18)),
-  }
-}
-
-// ── loadPos ───────────────────────────────────────────────────────────────
-// Returns all open perpetual positions for the connected account.
-//
-// Each position object:
-//   { posId, sym, isLong, lev, col, size, entry, liqPrice, pnl, pnlPct }
-//
-// Positions with zero collateral (p[4] === 0n) are skipped — they are closed.
-// Falls back to a synthetic liquidation price if the contract call fails.
-//
-// Mirrors legacy async function loadPos().
-
-export async function loadPos() {
-  const account = getAccount()
-  if (!account) return []
-
-  const rp = getReadProvider()
-  if (!rp) return []
-
-  const rc = new Contract(ADDRESSES.PERP, ABI_PERP, rp)
-
-  let posIds
+  /* Try Alchemy Token API first (faster, single call) */
   try {
-    posIds = await rc.userPositions(account)
-  } catch (_e) {
-    return []
-  }
+    var alchBal = await alchemyGetTokenBalances(account)
+    if (alchBal) return alchBal
+  } catch (e) {}
 
-  if (!posIds.length) return []
-
-  const positions = await Promise.all(
-    posIds.map(async (id) => {
-      try {
-        const p = await rc.getPosition(id)
-
-        // p layout: [owner, assetKey, isLong, lev, collateral, size, entryPrice, openTime]
-        if (p[4] === 0n) return null   // closed position
-
-        const sym    = KEY_TO_SYM[p[1]] ?? p[1]
-        const col    = Number(formatUnits(p[4], USDC_DECIMALS))
-        const size   = Number(formatUnits(p[5], USDC_DECIMALS))
-        const entry  = Number(formatUnits(p[6], 18))
-        const isLong = Boolean(p[2])
-        const lev    = Number(p[3])
-
-        // Unrealised PnL
-        let pnl    = 0
-        let pnlPct = 0
-        try {
-          const [pnlRaw] = await rc.unrealisedPnL(id)
-          pnl    = Number(formatUnits(pnlRaw, USDC_DECIMALS))
-          pnlPct = col > 0 ? (pnl / col) * 100 : 0
-        } catch (_e) {
-          // leave 0
-        }
-
-        // Liquidation price
-        let liqPrice = null
-        try {
-          const liqRaw = await rc.liquidationPrice(id)
-          liqPrice     = Number(formatUnits(liqRaw, 18))
-        } catch (_e) {
-          // synthetic fallback: ±(entry ± entry/lev * 0.9)
-          if (isLong) {
-            liqPrice = entry - (entry / lev) * 0.9
-          } else {
-            liqPrice = entry + (entry / lev) * 0.9
-          }
-        }
-
-        return { posId: id.toString(), sym, isLong, lev, col, size, entry, liqPrice, pnl, pnlPct }
-      } catch (_e) {
-        return null
-      }
-    }),
-  )
-
-  return positions.filter(Boolean)
-}
-
-// ── loadPts ───────────────────────────────────────────────────────────────
-// Returns points / referral data for the connected account:
-//   { pts, vol, streak, refCount, code, referrer }
-//
-// Mirrors legacy async function loadPts().
-
-export async function loadPts() {
-  const account = getAccount()
-  if (!account) return null
-
-  const rp = getReadProvider()
-  if (!rp) return null
-
+  /* Fallback: direct contract reads */
   try {
-    const rc   = new Contract(ADDRESSES.PTS, ABI_PTS, rp)
-    const info = await rc.getUserInfo(account)
-
-    // info layout: [pts, vol, streak, refCount, codeBytes32, referrerAddr]
-    const code = decodeBytes32String(info[4]).replace(/\0/g, '')
-
+    var r = await Promise.all([
+      cUSDC().balanceOf(account),
+      cTKN(ADDRESSES.ETHT).balanceOf(account),
+      cTKN(ADDRESSES.SOLT).balanceOf(account),
+      cTKN(ADDRESSES.BSLV).balanceOf(account)
+    ])
     return {
-      pts:      Number(info[0]),
-      vol:      Number(formatUnits(info[1], USDC_DECIMALS)),
-      streak:   Number(info[2]),
-      refCount: Number(info[3]),
-      code,
-      referrer: info[5],
+      USDC:    Number(formatUnits(r[0], USDC_DECIMALS)),
+      ETH_TKN: Number(formatEther(r[1])),
+      SOL_TKN: Number(formatEther(r[2])),
+      BSLV:    Number(formatEther(r[3]))
     }
-  } catch (_e) {
-    return null
-  }
-}
-
-// ── regPts ────────────────────────────────────────────────────────────────
-// Registers a referral code for the connected account.
-//
-// `myCode`  — the user's chosen referral code (string)
-// `refCode` — a referrer's code to credit (string, may be empty)
-//
-// NOTE: the legacy app called `cPts()` (lowercase 't') which was a bug —
-// the correct export from wallet.js is `cPTS()`. Using `cPTS()` here.
-//
-// Mirrors legacy async function regPts(myCode, refCode).
-
-export async function regPts(myCode, refCode) {
-  const myBytes  = encodeBytes32String(myCode.trim())
-  const refBytes = refCode?.trim() ? encodeBytes32String(refCode.trim()) : ZeroHash
-
-  const tx = await cPTS().register(myBytes, refBytes)
-  return waitTx(tx)
+  } catch (er) { return { USDC: 0, ETH_TKN: 0, SOL_TKN: 0, BSLV: 0 } }
 }
 
 // ── claimFaucet ───────────────────────────────────────────────────────────
-// Claims testnet tokens from the faucet.
-//
-// Pre-flight checks (throws with descriptive messages on failure):
-//   - canClaim()            — false → 'Not eligible; cooldown: Xs'
-//   - getBalance()          — 0n    → 'Faucet empty'
-//
 // Mirrors legacy async function claimFaucet().
 
 export async function claimFaucet() {
-  const rp = getReadProvider()
-  const account = getAccount()
-  if (!account) throw new Error('Wallet not connected')
-
-  if (rp) {
-    const rc = new Contract(ADDRESSES.FAUCET, ABI_FAUCET, rp)
-
-    const can = await rc.canClaim(account).catch(() => true)
-    if (!can) {
-      const cd  = await rc.cooldownRemaining(account).catch(() => 0n)
-      const sec = Number(cd)
-      throw new Error(`Not eligible yet. Cooldown: ${sec}s remaining.`)
-    }
-
-    const bal = await rc.getBalance().catch(() => 1n)
-    if (bal === 0n) throw new Error('Faucet empty. Check back later.')
+  var account = getAccount()
+  var fc = cFAU()
+  if (!fc) throw new Error('Faucet error')
+  var canC = await fc.canClaim(account).catch(function () { return true })
+  if (!canC) {
+    var rem = await fc.cooldownRemaining(account).catch(function () { return BigInt(0) })
+    var hh = Math.floor(Number(rem) / 3600), mm = Math.ceil((Number(rem) % 3600) / 60)
+    throw new Error('Cooldown: ' + hh + 'h ' + mm + 'm remaining. Come back later!')
   }
-
-  const tx      = await cFAU().claim({ gasLimit: 120000 })
-  const receipt = await waitTx(tx)
-  return receipt
+  try {
+    var fauBal = await fc.getBalance()
+    if (fauBal === BigInt(0)) throw new Error('Faucet empty. Fund it: ' + ADDRESSES.FAUCET)
+  } catch (be) { if (be.message.indexOf('Faucet empty') >= 0 || be.message.indexOf('Fund it') >= 0) throw be }
+  var tx = await fc.claim({ gasLimit: 120000 })
+  await waitTx(tx)
+  return tx.hash
 }
 
 // ── getFauCd ──────────────────────────────────────────────────────────────
-// Returns the faucet cooldown remaining in seconds (0 if claimable or on error).
-//
 // Mirrors legacy async function getFauCd().
 
 export async function getFauCd() {
-  const account = getAccount()
-  if (!account) return 0
+  var account = getAccount()
+  try { return Number(await cFAU().cooldownRemaining(account)) } catch { return 0 }
+}
 
+// ── loadPos ───────────────────────────────────────────────────────────────
+// Mirrors legacy async function loadPos().
+
+export async function loadPos() {
+  var account = getAccount()
+  if (!account || !cPERP()) return []
   try {
-    const rp = getReadProvider()
-    if (!rp) return 0
+    var ids = await cPERP().userPositions(account)
+    var list = await Promise.all(ids.map(async function (id) {
+      try {
+        var p = await cPERP().getPosition(id)
+        if (!p || p[4] === BigInt(0)) return null
+        var sym = Object.keys(MARKET_KEYS).find(function (k) { return MARKET_KEYS[k] === p[1] }) || '???'
+        /* entryPrice is stored in WAD (1e18 per $1) - must use formatUnits(18) */
+        var entry = parseFloat(formatUnits(p[6], 18))
+        var colUSD = Number(formatUnits(p[4], USDC_DECIMALS))
+        var sizeUSD = Number(formatUnits(p[5], USDC_DECIMALS))
+        if (sizeUSD === 0) sizeUSD = colUSD * Number(p[3])
+        var liqPrice = 0
+        try {
+          var liqRaw = await cPERP().liquidationPrice(id)
+          /* liqPrice also in WAD */
+          liqPrice = parseFloat(formatUnits(liqRaw, 18))
+        } catch (le) {}
+        if (liqPrice === 0 && entry > 0) { var lv = Number(p[3]); liqPrice = p[2] ? entry * (1 - 0.9 / lv) : entry * (1 + 0.9 / lv) }
+        return { id: Number(id), isLong: p[2], leverage: Number(p[3]), colUSD: colUSD, sizeUSD: sizeUSD, entry: entry, sym: sym, liqPrice: liqPrice }
+      } catch (er) { return null }
+    }))
+    return list.filter(function (x) { return x && x.colUSD > 0 })
+  } catch (er) { return [] }
+}
 
-    const rc = new Contract(ADDRESSES.FAUCET, ABI_FAUCET, rp)
-    const cd = await rc.cooldownRemaining(account)
-    return Number(cd)
-  } catch (_e) {
-    return 0
-  }
+// ── loadPts ───────────────────────────────────────────────────────────────
+// Mirrors legacy async function loadPts().
+
+export async function loadPts() {
+  var account = getAccount()
+  if (!account || !cPTS()) return null
+  try {
+    var info = await cPTS().getUserInfo(account)
+    var code = decodeBytes32String ? decodeBytes32String(info[4]).replace(/\0/g, '') : ''
+    return { pts: Number(info[0]), vol: Number(info[1]), streak: Number(info[2]), refCount: Number(info[3]), code: code, referrer: info[5] }
+  } catch (er) { return null }
+}
+
+// ── regPts ────────────────────────────────────────────────────────────────
+// Mirrors legacy async function regPts(myCode, refCode).
+
+export async function regPts(myCode, refCode) {
+  var mc = encodeBytes32String(myCode.slice(0, 31))
+  var rc = refCode ? encodeBytes32String(refCode.slice(0, 31)) : ZeroHash
+  var tx = await cPTS().register(mc, rc)
+  await waitTx(tx)
+  return tx.hash
 }
