@@ -1,0 +1,171 @@
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.pairBar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-lg);
+  padding: var(--space-3) var(--space-5);
+  box-shadow: var(--shadow-sm);
+  flex-wrap: wrap;
+}
+
+.pairSelector {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  transition: background var(--transition-fast);
+}
+
+.pairSelector:hover {
+  background: var(--color-surface-hover);
+}
+
+.pairName {
+  font-size: var(--text-md);
+  font-weight: var(--weight-semibold);
+  font-family: var(--font-mono);
+  color: var(--color-text-primary);
+}
+
+.pairStats {
+  display: flex;
+  gap: var(--space-6);
+  flex-wrap: wrap;
+}
+
+.pairStat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.statLabel {
+  font-size: var(--text-xs);
+  color: var(--color-text-tertiary);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: 1fr 280px;
+  gap: var(--space-4);
+  align-items: start;
+}
+
+.chart {
+  min-height: 420px;
+}
+
+.chartInner {
+  height: 420px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 39px,
+    var(--color-border-subtle) 39px,
+    var(--color-border-subtle) 40px
+  );
+}
+
+.orderForm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.sideTabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-1);
+  background: var(--color-bg);
+  border-radius: var(--radius-md);
+  padding: var(--space-1);
+}
+
+.sideTab {
+  padding: var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.longTab {
+  background: var(--color-success-subtle);
+  color: var(--color-success);
+}
+
+.shortTab {
+  color: var(--color-text-secondary);
+}
+
+.shortTab:hover {
+  background: var(--color-danger-subtle);
+  color: var(--color-danger);
+}
+
+.leverageRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.leverageBadge {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  font-family: var(--font-mono);
+  color: var(--color-accent);
+  background: var(--color-accent-subtle);
+  border: 1px solid var(--color-accent-muted);
+  border-radius: var(--radius-sm);
+  padding: 2px var(--space-2);
+}
+
+.slider {
+  width: 100%;
+  accent-color: var(--color-accent);
+  height: 4px;
+  cursor: pointer;
+}
+
+.formFields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.summaryRows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  background: var(--color-bg);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+}
+
+.summaryRow {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.tableCardHeader {
+  padding: var(--space-4) var(--space-6) 0;
+}
+
+@media (max-width: 900px) {
+  .grid {
+    grid-template-columns: 1fr;
+  }
+}
