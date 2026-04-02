@@ -9,6 +9,7 @@ import {
   Settings,
 } from 'lucide-react'
 import styles from './Sidebar.module.css'
+import { useWallet } from '@/contexts/WalletContext'
 
 const NAV_ITEMS = [
   { to: '/dashboard', label: 'Dashboard',  icon: LayoutDashboard },
@@ -24,11 +25,18 @@ const BOTTOM_ITEMS = [
 ]
 
 export default function Sidebar() {
+  const { account } = useWallet()
+
+  const displayName = account
+    ? account.slice(0, 6) + '…' + account.slice(-4)
+    : 'Guest User'
+  const avatarChar = account ? account.slice(2, 3).toUpperCase() : 'G'
+
   return (
     <aside className={styles.sidebar} aria-label="Main navigation">
       <div className={styles.header}>
         <span className={styles.logo}>Geldux</span>
-        <span className={styles.networkDot} title="Testnet" />
+        <span className={styles.networkDot} title="Base Sepolia Testnet" />
       </div>
 
       <nav className={styles.nav}>
@@ -67,9 +75,9 @@ export default function Sidebar() {
         </ul>
 
         <div className={styles.userCard}>
-          <div className={styles.avatar}>G</div>
+          <div className={styles.avatar}>{avatarChar}</div>
           <div className={styles.userInfo}>
-            <span className={styles.userName}>Guest User</span>
+            <span className={styles.userName}>{displayName}</span>
             <span className={styles.userRole}>Base Sepolia</span>
           </div>
         </div>

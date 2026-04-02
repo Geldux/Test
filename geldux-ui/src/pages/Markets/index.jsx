@@ -1,21 +1,33 @@
 import { Search } from 'lucide-react'
 import { Card, Badge, Input, Table, TableHead, TableBody, TableRow, TableCell } from '@/components/ui'
+import { useAppData } from '@/contexts/DataContext'
 import styles from './Markets.module.css'
 
-const MARKETS = [
-  { symbol: 'BTC',  name: 'Bitcoin',         price: '$62,140.00', change24h: 2.14,  volume: '$28.4B',  cap: '$1.22T', category: 'Layer 1' },
-  { symbol: 'ETH',  name: 'Ethereum',        price: '$3,012.50',  change24h: -0.87, volume: '$14.1B',  cap: '$362B',  category: 'Layer 1' },
-  { symbol: 'SOL',  name: 'Solana',          price: '$148.30',    change24h: 5.31,  volume: '$3.8B',   cap: '$67.2B', category: 'Layer 1' },
-  { symbol: 'BNB',  name: 'BNB',             price: '$568.20',    change24h: 1.02,  volume: '$1.9B',   cap: '$83.4B', category: 'Layer 1' },
-  { symbol: 'ARB',  name: 'Arbitrum',        price: '$0.892',     change24h: -2.10, volume: '$420M',   cap: '$3.6B',  category: 'Layer 2' },
-  { symbol: 'OP',   name: 'Optimism',        price: '$2.14',      change24h: 3.40,  volume: '$310M',   cap: '$2.8B',  category: 'Layer 2' },
-  { symbol: 'AVAX', name: 'Avalanche',       price: '$34.80',     change24h: -1.22, volume: '$620M',   cap: '$14.2B', category: 'Layer 1' },
-  { symbol: 'LINK', name: 'Chainlink',       price: '$14.20',     change24h: 0.88,  volume: '$440M',   cap: '$8.4B',  category: 'Oracle'  },
+const MARKET_META = [
+  { symbol: 'BTC',  name: 'Bitcoin',   category: 'Layer 1' },
+  { symbol: 'ETH',  name: 'Ethereum',  category: 'Layer 1' },
+  { symbol: 'SOL',  name: 'Solana',    category: 'Layer 1' },
+  { symbol: 'BSLV', name: 'BaseLove',  category: 'DeFi'    },
 ]
 
 const TABS = ['All', 'Layer 1', 'Layer 2', 'DeFi', 'Oracle']
 
+function fmtPrice(sym, n) {
+  if (!n) return '—'
+  if (sym === 'BSLV') return `$${n.toFixed(4)}`
+  if (n < 10)  return `$${n.toFixed(2)}`
+  return '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
 export default function Markets() {
+  const { prices } = useAppData()
+
+  const markets = MARKET_META.map((m) => ({
+    ...m,
+    price:    fmtPrice(m.symbol, prices[m.symbol]),
+    change24h: null,           /* no 24 h delta available yet */
+  }))
+
   return (
     <div className={styles.page}>
       <div className={styles.toolbar}>
@@ -53,7 +65,7 @@ export default function Markets() {
             </TableRow>
           </TableHead>
           <TableBody>
-            {MARKETS.map((m, i) => (
+            {markets.map((m, i) => (
               <TableRow key={m.symbol} onClick={() => {}}>
                 <TableCell>
                   <span className="text-muted" style={{ fontSize: 'var(--text-xs)' }}>{i + 1}</span>
@@ -71,16 +83,13 @@ export default function Markets() {
                   <span className="mono">{m.price}</span>
                 </TableCell>
                 <TableCell align="right">
-                  <span className={m.change24h >= 0 ? 'text-positive' : 'text-negative'}
-                        style={{ fontWeight: 'var(--weight-medium)', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-sm)' }}>
-                    {m.change24h >= 0 ? '+' : ''}{m.change24h}%
-                  </span>
+                  <span className="text-muted" style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--text-sm)' }}>—</span>
                 </TableCell>
                 <TableCell align="right">
-                  <span className="mono text-muted">{m.volume}</span>
+                  <span className="mono text-muted">—</span>
                 </TableCell>
                 <TableCell align="right">
-                  <span className="mono text-muted">{m.cap}</span>
+                  <span className="mono text-muted">—</span>
                 </TableCell>
                 <TableCell>
                   <Badge variant="default" size="sm">{m.category}</Badge>
