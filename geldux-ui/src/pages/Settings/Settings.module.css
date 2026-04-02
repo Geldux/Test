@@ -197,6 +197,42 @@
   padding: var(--space-8) 0;
 }
 
+/* ── Points & Referral ───────────────────────────────────────────────────── */
+
+.ptsStats {
+  display: flex;
+  gap: var(--space-6);
+  margin-bottom: var(--space-5);
+}
+
+.ptsStat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ptsStatValue {
+  font-size: var(--text-xl);
+  font-weight: var(--weight-bold);
+  color: var(--color-text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.ptsStatLabel {
+  font-size: var(--text-xs);
+  color: var(--color-text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.checkInRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: var(--space-3) 0 var(--space-4);
+}
+
 /* ── Responsive ──────────────────────────────────────────────────────────── */
 
 @media (max-width: 900px) {

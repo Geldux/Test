@@ -1,7 +1,10 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useCallback } from 'react'
 import { ChevronDown, Info, TrendingUp, TrendingDown } from 'lucide-react'
 import { useWallet } from '@/contexts/WalletContext'
 import { useAppData } from '@/contexts/DataContext'
+import { useToast } from '@/contexts/ToastContext'
+import { perpOpen, perpClose } from '@/services/web3/perp'
+import { sbST } from '@/services/api/supabase'
 import styles from './Perps.module.css'
 
 const MARKET_META = [
@@ -28,8 +31,9 @@ function fmtUsd(n) {
 }
 
 export default function Perps() {
-  const { account }                           = useWallet()
-  const { prices, balances, positions }       = useAppData()
+  const { account }                                 = useWallet()
+  const { prices, balances, positions, refresh }   = useAppData()
+  const { showToast }                               = useToast()
 
   const [activePair, setActivePair] = useState('BTC')
   const [side,       setSide]       = useState('long')
@@ -38,13 +42,18 @@ export default function Perps() {
   const [mobileTab,  setMobileTab]  = useState('chart')
   const [bottomTab,  setBottomTab]  = useState('Positions')
 
-  /* Live markets overlay */
+  /* ── Trade action state ─────────────────────────────────────────────── */
+  const [txStep,     setTxStep]     = useState('')
+  const [isTxPending, setTxPending] = useState(false)
+  const [closingId,  setClosingId]  = useState(null)   /* posId being closed */
+
+  /* ── Live markets overlay ───────────────────────────────────────────── */
   const markets = useMemo(() =>
     MARKET_META.map((m) => ({
       ...m,
-      price:   fmtP(prices[m.sym], m.sym),
+      price:    fmtP(prices[m.sym], m.sym),
       rawPrice: prices[m.sym] || 0,
-      change:  0,          /* no 24 h delta available */
+      change:   0,
     })),
   [prices])
 
@@ -52,14 +61,14 @@ export default function Perps() {
   const markPriceN = prices[activePair] || 0
   const markPrice  = markPriceN ? '$' + fmtP(markPriceN, activePair) : '—'
 
-  /* Order form calculations */
+  /* ── Order form calculations ────────────────────────────────────────── */
   const estMargin = collateral ? (parseFloat(collateral) || 0).toFixed(2) : '—'
   const estSize   = collateral ? ((parseFloat(collateral) || 0) * leverage).toFixed(2) : '—'
   const availUsdc = balances?.USDC != null
     ? balances.USDC.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' USDC'
     : '—'
 
-  /* Map loadPos() shape → table display shape */
+  /* ── Map loadPos() shape → table display shape ──────────────────────── */
   const livePositions = useMemo(() =>
     positions.map((pos) => {
       const mark   = prices[pos.sym] || pos.entry
@@ -78,11 +87,12 @@ export default function Perps() {
         pnlPct: Math.round(pct * 10_000) / 100,
         liq:    fmtUsd(pos.liqPrice),
         margin: fmtUsd(pos.colUSD),
+        rawPnl: pnlUsd,
       }
     }),
   [positions, prices])
 
-  /* Total unrealized PnL for header */
+  /* ── Total unrealized PnL for header ───────────────────────────────── */
   const totalPnl = useMemo(() =>
     positions.reduce((acc, pos) => {
       const mark = prices[pos.sym] || pos.entry
@@ -94,13 +104,58 @@ export default function Perps() {
   [positions, prices])
 
   const pairStats = [
-    { label: 'Mark Price',    value: markPrice,    positive: null  },
-    { label: 'Index Price',   value: markPrice,    positive: null  },
-    { label: '24h Change',    value: '—',           positive: null  },
-    { label: 'Open Interest', value: '—',           positive: null  },
+    { label: 'Mark Price',    value: markPrice,     positive: null },
+    { label: 'Index Price',   value: markPrice,     positive: null },
+    { label: '24h Change',    value: '—',            positive: null },
+    { label: 'Open Interest', value: '—',            positive: null },
     { label: 'Funding Rate',  value: market.funding, positive: null },
-    { label: 'Next Funding',  value: '04:32:11',   positive: null  },
+    { label: 'Next Funding',  value: '04:32:11',    positive: null },
   ]
+
+  /* ── Open position ──────────────────────────────────────────────────── */
+  const handleOpen = useCallback(async () => {
+    if (!account || !collateral || isTxPending) return
+    setTxPending(true)
+    try {
+      const isLong = side === 'long'
+      const colUSD = parseFloat(collateral)
+      const result = await perpOpen(activePair, isLong, leverage, colUSD, (s) => setTxStep(s))
+      showToast(
+        `${isLong ? 'Long' : 'Short'} ${activePair} opened · Tx: ${result.hash.slice(0, 10)}…`,
+        'success',
+      )
+      sbST('perp', activePair, isLong ? 'long' : 'short', colUSD * leverage, prices[activePair] || 0, 0, result.hash).catch(() => {})
+      setCollateral('')
+      setTimeout(refresh, 3000)
+    } catch (e) {
+      showToast(e.message || 'Open failed', 'error')
+    } finally {
+      setTxPending(false)
+      setTxStep('')
+    }
+  }, [account, activePair, side, leverage, collateral, isTxPending, prices, refresh, showToast])
+
+  /* ── Close position ─────────────────────────────────────────────────── */
+  const handleClose = useCallback(async (posId) => {
+    if (closingId != null) return
+    setClosingId(posId)
+    try {
+      const hash = await perpClose(posId)
+      showToast(`Position closed · Tx: ${hash.slice(0, 10)}…`, 'success')
+      setTimeout(refresh, 3000)
+    } catch (e) {
+      showToast(e.message || 'Close failed', 'error')
+    } finally {
+      setClosingId(null)
+    }
+  }, [closingId, refresh, showToast])
+
+  /* ── Submit button label ────────────────────────────────────────────── */
+  const submitLabel = !account
+    ? 'Connect Wallet'
+    : isTxPending
+      ? (txStep || 'Processing…')
+      : `${side === 'long' ? 'Open Long' : 'Open Short'} · ${leverage}×`
 
   return (
     <div className={styles.page}>
@@ -219,7 +274,12 @@ export default function Perps() {
               <div className={styles.leverageDisplay}>{leverage}×</div>
             </div>
             <div className={styles.sliderWrap}>
-              <input type="range" min="1" max="50" value={leverage} onChange={(e) => setLeverage(Number(e.target.value))} className={styles.slider} />
+              <input
+                type="range" min="1" max="50" value={leverage}
+                onChange={(e) => setLeverage(Number(e.target.value))}
+                className={styles.slider}
+                disabled={isTxPending}
+              />
               <div className={styles.sliderMarks}>
                 {['1×','10×','25×','50×'].map((m) => <span key={m} className={styles.sliderMark}>{m}</span>)}
               </div>
@@ -228,11 +288,18 @@ export default function Perps() {
             <div className={styles.fieldGroup}>
               <label className={styles.fieldLabel}>Collateral</label>
               <div className={styles.inputRow}>
-                <input type="number" className={styles.numInput} placeholder="0.00" value={collateral} onChange={(e) => setCollateral(e.target.value)} />
+                <input
+                  type="number"
+                  className={styles.numInput}
+                  placeholder="0.00"
+                  value={collateral}
+                  onChange={(e) => setCollateral(e.target.value)}
+                  disabled={isTxPending}
+                />
                 <span className={styles.inputUnit}>USDC</span>
               </div>
               <div className={styles.pctRow}>
-                {['25%','50%','75%','100%'].map((p) => <button key={p} className={styles.pctBtn}>{p}</button>)}
+                {['25%','50%','75%','100%'].map((p) => <button key={p} className={styles.pctBtn} disabled={isTxPending}>{p}</button>)}
               </div>
             </div>
 
@@ -255,9 +322,12 @@ export default function Perps() {
               <span className={styles.balValue}>{availUsdc}</span>
             </div>
 
-            {/* intentionally not wired to trade action — read-only phase */}
-            <button className={`${styles.submitBtn} ${side === 'long' ? styles.submitLong : styles.submitShort}`} disabled>
-              {account ? `${side === 'long' ? 'Open Long' : 'Open Short'} · ${leverage}×` : 'Connect Wallet'}
+            <button
+              className={`${styles.submitBtn} ${side === 'long' ? styles.submitLong : styles.submitShort}`}
+              onClick={handleOpen}
+              disabled={!account || !collateral || isTxPending}
+            >
+              {submitLabel}
             </button>
           </div>
         </div>
@@ -315,8 +385,13 @@ export default function Perps() {
                     <td className={`${styles.posCell} mono`} style={{ color: 'var(--color-text-tertiary)' }}>{p.liq}</td>
                     <td className={`${styles.posCell} mono`} style={{ color: 'var(--color-text-tertiary)' }}>{p.margin}</td>
                     <td className={styles.posCell}>
-                      {/* Close button intentionally disabled — trading actions not yet wired */}
-                      <button className={styles.closeBtn} disabled>Close</button>
+                      <button
+                        className={styles.closeBtn}
+                        onClick={() => handleClose(p.id)}
+                        disabled={closingId != null}
+                      >
+                        {closingId === p.id ? 'Closing…' : 'Close'}
+                      </button>
                     </td>
                   </tr>
                 ))}
