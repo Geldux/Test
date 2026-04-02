@@ -16,7 +16,7 @@ import { parseUnits, Contract } from 'ethers'
 import { ADDRESSES, MARKET_KEYS } from './config.js'
 import { ABI_SPOT } from './contracts.js'
 import { getReadProvider, cSPOT } from './wallet.js'
-import { pollPyth, submitPythUpdate } from './oracle.js'
+import { pollPyth, submitPythUpdate, isVaasFresh } from './oracle.js'
 import { waitTx, doApprove } from './tx.js'
 
 // ── spotBuy ───────────────────────────────────────────────────────────────
@@ -33,7 +33,7 @@ export async function spotBuy(sym, amt, setStep, slippage) {
   await doApprove(ADDRESSES.SPOT, raw)
 
   step('Updating price oracle...')
-  await pollPyth().catch(function () {})
+  if (!isVaasFresh()) await pollPyth().catch(function () {})
 
   /* Skip Pyth update if on-chain price is already fresh — saves a wallet prompt */
   var _sfresh = false
@@ -79,7 +79,7 @@ export async function spotSell(sym, amt, setStep, slippage) {
   await doApprove(ADDRESSES.SPOT, raw, ta)
 
   step('Updating price oracle...')
-  await pollPyth().catch(function () {})
+  if (!isVaasFresh()) await pollPyth().catch(function () {})
 
   var _sfresh2 = false
   try {
