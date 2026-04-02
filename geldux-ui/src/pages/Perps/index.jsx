@@ -257,12 +257,14 @@ export default function Perps() {
             <button
               className={`${styles.sideTab} ${side === 'long' ? styles.longActive : ''}`}
               onClick={() => setSide('long')}
+              disabled={isTxPending}
             >
               <TrendingUp size={13} /> Long
             </button>
             <button
               className={`${styles.sideTab} ${side === 'short' ? styles.shortActive : ''}`}
               onClick={() => setSide('short')}
+              disabled={isTxPending}
             >
               <TrendingDown size={13} /> Short
             </button>
