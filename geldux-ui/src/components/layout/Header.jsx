@@ -7,6 +7,8 @@ import { useAppData } from '@/contexts/DataContext'
 const PAGE_TITLES = {
   '/dashboard': 'Dashboard',
   '/markets':   'Markets',
+  '/spot':      'Spot',
+  '/perps':     'Perps',
   '/portfolio': 'Portfolio',
   '/wallet':    'Wallet',
   '/settings':  'Settings',
