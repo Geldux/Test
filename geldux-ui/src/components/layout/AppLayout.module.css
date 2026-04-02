@@ -1,17 +1,12 @@
+/* ── Root ────────────────────────────────────────────────────────────────── */
+
 .root {
   display: flex;
-  min-height: 100vh;
+  height: 100%;
   background-color: var(--color-bg);
 }
 
-.overlay {
-  display: none;
-  position: fixed;
-  inset: 0;
-  background: rgba(15, 23, 42, 0.35);
-  backdrop-filter: blur(2px);
-  z-index: calc(var(--z-overlay) - 1);
-}
+/* ── Body (right of sidebar) ─────────────────────────────────────────────── */
 
 .body {
   flex: 1;
@@ -19,13 +14,32 @@
   margin-left: var(--sidebar-width);
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
+  height: 100%;
+  overflow: hidden;
 }
+
+/* Trading routes: body fills the full viewport height exactly */
+.tradingBody {
+  overflow: hidden;
+}
+
+/* ── Main content area ───────────────────────────────────────────────────── */
 
 .main {
   flex: 1;
   overflow-y: auto;
+  overflow-x: hidden;
+  min-height: 0;
 }
+
+/* Trading routes: main is a flex column that hands 100% height to the page */
+.tradingMain {
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Content wrapper (non-trading pages) ─────────────────────────────────── */
 
 .content {
   max-width: var(--content-max-width);
@@ -36,13 +50,16 @@
 
 /* ── Mobile ──────────────────────────────────────────────────────────────── */
 
-@media (max-width: 768px) {
+@media (max-width: 1023px) {
   .body {
     margin-left: 0;
+    /* Reserve space for the bottom nav */
+    padding-bottom: var(--mobile-nav-height);
   }
 
-  .overlay {
-    display: block;
+  .tradingBody {
+    /* Trading pages also need bottom nav clearance */
+    padding-bottom: var(--mobile-nav-height);
   }
 
   .content {

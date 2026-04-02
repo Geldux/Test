@@ -18,20 +18,13 @@
   gap: var(--space-3);
 }
 
-.menuBtn {
+/* Logo shown only on mobile — sidebar is hidden so we need the brand mark */
+.mobileLogo {
   display: none;
-  align-items: center;
-  justify-content: center;
-  width: 36px;
-  height: 36px;
-  border-radius: var(--radius-sm);
-  color: var(--color-text-secondary);
-  transition: background var(--transition-fast), color var(--transition-fast);
-}
-
-.menuBtn:hover {
-  background: var(--color-surface-hover);
-  color: var(--color-text-primary);
+  font-size: var(--text-md);
+  font-weight: var(--weight-bold);
+  color: var(--color-accent);
+  letter-spacing: -0.02em;
 }
 
 .title {
@@ -97,14 +90,30 @@
   flex-shrink: 0;
 }
 
+.networkLabel {
+  font-size: var(--text-xs);
+}
+
 /* ── Mobile ──────────────────────────────────────────────────────────────── */
 
-@media (max-width: 768px) {
+@media (max-width: 1023px) {
   .header {
     padding: 0 var(--space-4);
   }
 
-  .menuBtn {
-    display: flex;
+  .mobileLogo {
+    display: block;
+  }
+
+  .title {
+    display: none;
+  }
+
+  .networkLabel {
+    display: none;
+  }
+
+  .networkBadge {
+    padding: var(--space-1) var(--space-2);
   }
 }

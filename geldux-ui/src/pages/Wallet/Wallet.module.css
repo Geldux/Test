@@ -138,3 +138,21 @@
     grid-template-columns: 1fr;
   }
 }
+
+@media (max-width: 600px) {
+  .balanceValue {
+    font-size: var(--text-2xl);
+  }
+
+  .balanceActions {
+    width: 100%;
+  }
+
+  .balanceMain {
+    align-items: flex-start;
+  }
+
+  /* Transaction history: hide Tx Hash column */
+  .page th:nth-child(6),
+  .page td:nth-child(6) { display: none; }
+}
