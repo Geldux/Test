@@ -204,3 +204,14 @@ export async function submitPythUpdate() {
 export async function pushPyth() {
   /* DEPRECATED — use submitPythUpdate() inside each trade function */
 }
+
+// ── isVaasFresh ───────────────────────────────────────────────────────────
+// Returns true when the cached VAAs are non-empty and within VAA_MAX_AGE_MS.
+// Mirrors the legacy inline guard:
+//   if(!vaas.length||!vaasTs||(Date.now()-vaasTs)>7000) await pollPyth()
+// Exported so spot.js (and any future caller) can apply the same guard
+// without reaching into private module state.
+
+export function isVaasFresh() {
+  return _vaas.length > 0 && _vaasTs > 0 && (Date.now() - _vaasTs) <= VAA_MAX_AGE_MS
+}
