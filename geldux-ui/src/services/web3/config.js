@@ -6,8 +6,6 @@ const ALCHEMY_KEY = import.meta.env.VITE_ALCHEMY_API_KEY
 
 export const ALCHEMY_RPC = `https://base-sepolia.g.alchemy.com/v2/${ALCHEMY_KEY}`
 export const ALCHEMY_WS  = `wss://base-sepolia.g.alchemy.com/v2/${ALCHEMY_KEY}`
-export const ALCHEMY_NFT = `https://base-sepolia.g.alchemy.com/nft/v3/${ALCHEMY_KEY}`
-export const ALCHEMY_TRF = `https://base-sepolia.g.alchemy.com/v2/${ALCHEMY_KEY}`
 
 // ── RPC rotation ─────────────────────────────────────────────────────────
 export const RPC_LIST = [
