@@ -1,0 +1,8 @@
+// Barrel export — import UI components from '@/components/ui'
+export { default as Button } from './Button'
+export { default as Card, CardHeader, CardTitle, CardDescription } from './Card'
+export { default as Badge } from './Badge'
+export { default as Input } from './Input'
+export { default as StatCard } from './StatCard'
+export { Table, TableHead, TableBody, TableRow, TableCell } from './Table'
+export { default as Divider } from './Divider'
