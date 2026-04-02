@@ -164,3 +164,13 @@
     flex-wrap: wrap;
   }
 }
+
+@media (max-width: 600px) {
+  .statsGrid {
+    gap: var(--space-3);
+  }
+
+  /* Holdings: hide Allocation column (bar is awkward at small widths) */
+  .page th:nth-child(4),
+  .page td:nth-child(4) { display: none; }
+}

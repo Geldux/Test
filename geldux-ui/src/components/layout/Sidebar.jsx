@@ -7,7 +7,6 @@ import {
   PieChart,
   Wallet,
   Settings,
-  X,
 } from 'lucide-react'
 import styles from './Sidebar.module.css'
 
@@ -24,14 +23,12 @@ const BOTTOM_ITEMS = [
   { to: '/settings', label: 'Settings', icon: Settings },
 ]
 
-export default function Sidebar({ open, onClose }) {
+export default function Sidebar() {
   return (
-    <aside className={`${styles.sidebar} ${open ? styles.open : ''}`} aria-label="Main navigation">
+    <aside className={styles.sidebar} aria-label="Main navigation">
       <div className={styles.header}>
         <span className={styles.logo}>Geldux</span>
-        <button className={styles.closeBtn} onClick={onClose} aria-label="Close menu">
-          <X size={18} />
-        </button>
+        <span className={styles.networkDot} title="Testnet" />
       </div>
 
       <nav className={styles.nav}>
@@ -43,7 +40,6 @@ export default function Sidebar({ open, onClose }) {
                 className={({ isActive }) =>
                   `${styles.navItem} ${isActive ? styles.active : ''}`
                 }
-                onClick={onClose}
               >
                 <Icon size={17} className={styles.navIcon} strokeWidth={1.75} />
                 <span className={styles.navLabel}>{label}</span>
@@ -62,7 +58,6 @@ export default function Sidebar({ open, onClose }) {
                 className={({ isActive }) =>
                   `${styles.navItem} ${isActive ? styles.active : ''}`
                 }
-                onClick={onClose}
               >
                 <Icon size={17} className={styles.navIcon} strokeWidth={1.75} />
                 <span className={styles.navLabel}>{label}</span>
@@ -75,7 +70,7 @@ export default function Sidebar({ open, onClose }) {
           <div className={styles.avatar}>G</div>
           <div className={styles.userInfo}>
             <span className={styles.userName}>Guest User</span>
-            <span className={styles.userRole}>Testnet</span>
+            <span className={styles.userRole}>Base Sepolia</span>
           </div>
         </div>
       </div>

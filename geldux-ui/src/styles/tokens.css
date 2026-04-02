@@ -93,8 +93,14 @@
   --sidebar-width:        240px;
   --sidebar-collapsed:    68px;
   --header-height:        60px;
+  --mobile-nav-height:    58px;
   --content-max-width:    1440px;
   --content-padding:      var(--space-6);
+
+  /* ── Trading terminal panels ─────────────────── */
+  --trading-panel-left:   180px;
+  --trading-panel-right:  316px;
+  --trading-panel-bottom: 220px;
 
   /* ── Transitions ─────────────────────────────── */
   --ease-out:   cubic-bezier(0.0, 0.0, 0.2, 1);
