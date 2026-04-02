@@ -1,5 +1,6 @@
 import { useState, useMemo, useCallback } from 'react'
 import { ChevronDown, Info, TrendingUp, TrendingDown } from 'lucide-react'
+import { Wallet } from 'lucide-react'
 import { useWallet } from '@/contexts/WalletContext'
 import { useAppData } from '@/contexts/DataContext'
 import { useToast } from '@/contexts/ToastContext'
@@ -31,8 +32,8 @@ function fmtUsd(n) {
 }
 
 export default function Perps() {
-  const { account }                                 = useWallet()
-  const { prices, balances, positions, refresh }   = useAppData()
+  const { account, isConnecting, connect }          = useWallet()
+  const { prices, balances, positions, refresh }    = useAppData()
   const { showToast }                               = useToast()
 
   const [activePair, setActivePair] = useState('BTC')
@@ -43,9 +44,9 @@ export default function Perps() {
   const [bottomTab,  setBottomTab]  = useState('Positions')
 
   /* ── Trade action state ─────────────────────────────────────────────── */
-  const [txStep,     setTxStep]     = useState('')
-  const [isTxPending, setTxPending] = useState(false)
-  const [closingId,  setClosingId]  = useState(null)   /* posId being closed */
+  const [txStep,      setTxStep]     = useState('')
+  const [isTxPending, setTxPending]  = useState(false)
+  const [closingId,   setClosingId]  = useState(null)
 
   /* ── Live markets overlay ───────────────────────────────────────────── */
   const markets = useMemo(() =>
@@ -78,6 +79,8 @@ export default function Perps() {
       const pnlUsd = pct * pos.sizeUSD
       return {
         id:     pos.id,
+        sym:    pos.sym,
+        isLong: pos.isLong,
         pair:   `${pos.sym}-PERP`,
         side:   pos.isLong ? 'Long' : 'Short',
         size:   fmtUsd(pos.sizeUSD),
@@ -87,7 +90,9 @@ export default function Perps() {
         pnlPct: Math.round(pct * 10_000) / 100,
         liq:    fmtUsd(pos.liqPrice),
         margin: fmtUsd(pos.colUSD),
-        rawPnl: pnlUsd,
+        rawPnl:    pnlUsd,
+        rawSize:   pos.sizeUSD,
+        rawMark:   mark,
       }
     }),
   [positions, prices])
@@ -121,7 +126,7 @@ export default function Perps() {
       const colUSD = parseFloat(collateral)
       const result = await perpOpen(activePair, isLong, leverage, colUSD, (s) => setTxStep(s))
       showToast(
-        `${isLong ? 'Long' : 'Short'} ${activePair} opened · Tx: ${result.hash.slice(0, 10)}…`,
+        `Opened ${isLong ? 'Long' : 'Short'} ${activePair} · Tx: ${result.hash.slice(0, 10)}…`,
         'success',
       )
       sbST('perp', activePair, isLong ? 'long' : 'short', colUSD * leverage, prices[activePair] || 0, 0, result.hash).catch(() => {})
@@ -139,20 +144,30 @@ export default function Perps() {
   const handleClose = useCallback(async (posId) => {
     if (closingId != null) return
     setClosingId(posId)
+    const lp = livePositions.find((p) => p.id === posId)
     try {
       const hash = await perpClose(posId)
-      showToast(`Position closed · Tx: ${hash.slice(0, 10)}…`, 'success')
+      const sym      = lp?.sym  || ''
+      const side     = lp?.isLong ? 'close-long' : 'close-short'
+      const sizeUsd  = lp?.rawSize  || 0
+      const markUsd  = lp?.rawMark  || 0
+      const pnl      = lp?.rawPnl   || 0
+      showToast(
+        `Closed ${lp?.pair ?? 'position'} · Tx: ${hash.slice(0, 10)}…`,
+        'success',
+      )
+      if (sym) sbST('perp', sym, side, sizeUsd, markUsd, pnl, hash).catch(() => {})
       setTimeout(refresh, 3000)
     } catch (e) {
       showToast(e.message || 'Close failed', 'error')
     } finally {
       setClosingId(null)
     }
-  }, [closingId, refresh, showToast])
+  }, [closingId, livePositions, refresh, showToast])
 
   /* ── Submit button label ────────────────────────────────────────────── */
   const submitLabel = !account
-    ? 'Connect Wallet'
+    ? (isConnecting ? 'Connecting…' : 'Connect Wallet')
     : isTxPending
       ? (txStep || 'Processing…')
       : `${side === 'long' ? 'Open Long' : 'Open Short'} · ${leverage}×`
@@ -326,9 +341,10 @@ export default function Perps() {
 
             <button
               className={`${styles.submitBtn} ${side === 'long' ? styles.submitLong : styles.submitShort}`}
-              onClick={handleOpen}
-              disabled={!account || !collateral || isTxPending}
+              onClick={!account ? connect : handleOpen}
+              disabled={isTxPending || isConnecting || (!!account && !collateral)}
             >
+              {!account && <Wallet size={13} style={{ marginRight: 4, verticalAlign: 'middle' }} />}
               {submitLabel}
             </button>
           </div>

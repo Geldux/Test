@@ -5,6 +5,7 @@ import { useWallet } from '@/contexts/WalletContext'
 import { useAppData } from '@/contexts/DataContext'
 import { useToast } from '@/contexts/ToastContext'
 import { claimFaucet, getFauCd } from '@/services/web3/data'
+import { EXPLORER } from '@/services/web3/config'
 import styles from './Wallet.module.css'
 
 const TX_VARIANT = {
@@ -52,6 +53,7 @@ export default function Wallet() {
   /* ── Faucet state ───────────────────────────────────────────────────── */
   const [faucetCd,      setFaucetCd]      = useState(null)  /* null=loading, 0=ready, N=cooldown sec */
   const [faucetPending, setFaucetPending] = useState(false)
+  const [faucetHash,    setFaucetHash]    = useState(null)
 
   useEffect(() => {
     if (!account) { setFaucetCd(null); return }
@@ -60,9 +62,11 @@ export default function Wallet() {
 
   const handleClaim = async () => {
     setFaucetPending(true)
+    setFaucetHash(null)
     try {
       const hash = await claimFaucet()
-      showToast('Faucet claimed! Tokens incoming.', 'success')
+      setFaucetHash(hash)
+      showToast(`Faucet claimed · Tx: ${hash.slice(0, 10)}…`, 'success')
       setFaucetCd(86_400)   /* approximate 24 h cooldown */
       setTimeout(refresh, 4000)
     } catch (e) {
@@ -204,10 +208,20 @@ export default function Wallet() {
                 Available in {fmtCooldown(faucetCd)}
               </span>
             )}
-            {faucetReady && (
+            {faucetReady && !faucetHash && (
               <span style={{ fontSize: 'var(--text-sm)', color: 'var(--color-success)' }}>
                 Ready to claim
               </span>
+            )}
+            {faucetHash && (
+              <a
+                href={`${EXPLORER}/tx/${faucetHash}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ fontSize: 'var(--text-sm)', color: 'var(--color-accent)', display: 'inline-flex', alignItems: 'center', gap: 4 }}
+              >
+                <ExternalLink size={12} /> View on BaseScan
+              </a>
             )}
           </div>
         </Card>
