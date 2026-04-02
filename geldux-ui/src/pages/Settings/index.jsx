@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { User, Bell, Shield, Sliders, Globe, KeyRound, Gift, Zap } from 'lucide-react'
 import { Card, CardTitle, CardDescription, Button, Input, Divider, Badge } from '@/components/ui'
 import { useWallet } from '@/contexts/WalletContext'
@@ -28,7 +28,12 @@ export default function Settings() {
   const [isSavingProfile, setSavingProfile] = useState(false)
 
   /* ── Points / referral state ────────────────────────────────────────── */
-  const [myCode,     setMyCode]     = useState(pts?.code || '')
+  const [myCode,     setMyCode]     = useState('')
+
+  /* Sync myCode once pts data loads (pts is null on first render) */
+  useEffect(() => {
+    if (pts?.code) setMyCode(pts.code)
+  }, [pts?.code])
   const [refCode,    setRefCode]    = useState('')
   const [isCheckingIn,  setCheckingIn]  = useState(false)
   const [isRegistering, setRegistering] = useState(false)

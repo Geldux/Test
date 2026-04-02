@@ -291,7 +291,7 @@ function OrderForm({ sym, availUsdc, account, connect, isConnecting, spotOnly, o
       <button
         className={`${styles.submitBtn} ${side === 'buy' ? styles.submitBtnBuy : styles.submitBtnSell}`}
         onClick={!account ? connect : handleSubmit}
-        disabled={isPending || isConnecting || isBtc}
+        disabled={isPending || isConnecting || (!!account && isBtc)}
       >
         {!account     ? (isConnecting ? 'Connecting…' : 'Connect Wallet') :
          isPending    ? (txStep || 'Processing…') :
