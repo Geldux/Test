@@ -372,8 +372,10 @@ img    { display: block; }
     background: var(--surface); overflow-y: auto;
     display: flex; flex-direction: column;
   }
-  .d-panel-tabs { padding: 16px 16px 0; }
-  .d-panel-body { flex: 1; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+  .d-panel-header { padding: 14px 16px 0; display: flex; justify-content: space-between; align-items: center; }
+  .d-panel-title  { font-family: var(--font-display); font-size: 15px; font-weight: 700; color: var(--text-1); }
+  .d-panel-tabs   { padding: 16px 16px 0; }
+  .d-panel-body   { flex: 1; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
 
   /* Positions/orders table */
   .pos-table { width: 100%; border-collapse: collapse; }
