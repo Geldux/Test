@@ -271,8 +271,8 @@ export default function App() {
         account={account}
         isConnecting={isConnecting}
         chainOk={chainOk}
-        pts={pts.pts?.total || 0}
-        level={{ name: pts.level }}
+        pts={ptsHook.pts}
+        level={ptsHook.level}
         connect={connect}
         disconnect={disconnect}
         onPointsClick={() => setShowPts(true)}
