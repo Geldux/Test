@@ -42,8 +42,8 @@ async function fetchOnChainData() {
       MARKETS.map(async (m) => {
         try {
           const [markRaw, fundRaw] = await Promise.all([
-            cfg.getMarkPrice(m.key),
-            cfg.getFundingRate(m.key),
+            cfg.getMarkPrice(m.key, true),   /* forLong=true for mid-price reference */
+            cfg.computeFundingRate(m.key),
           ])
           if (markRaw) {
             const mark = Number(markRaw) / 1e18
@@ -52,8 +52,8 @@ async function fetchOnChainData() {
           _funding[m.sym] = Number(fundRaw) / 1e18
         } catch (_) {}
         try {
-          const [longOI, shortOI] = await cfg.getOpenInterest(m.key)
-          _oi[m.sym] = { longOI: Number(longOI) / 1e18, shortOI: Number(shortOI) / 1e18 }
+          const [lo, so] = await cfg.getOI(m.key)
+          _oi[m.sym] = { longOI: Number(lo) / 1e18, shortOI: Number(so) / 1e18 }
         } catch (_) {}
       })
     )

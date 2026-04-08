@@ -1,17 +1,15 @@
-import { keccak256, toUtf8Bytes } from 'ethers'
-
 /* Pyth price feed IDs (Base Sepolia) */
 export const PYTH_IDS = {
-  BTC:  '0xe62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43',
-  ETH:  '0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace',
-  SOL:  '0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d',
+  BTC: '0xe62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43',
+  ETH: '0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace',
+  SOL: '0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d',
 }
 
-/* Market asset keys = keccak256(symbol) — must match on-chain PerpConfig */
+/* Asset keys — hardcoded to match on-chain PerpConfig values exactly */
 export const ASSET_KEYS = {
-  BTC: keccak256(toUtf8Bytes('BTC')),
-  ETH: keccak256(toUtf8Bytes('ETH')),
-  SOL: keccak256(toUtf8Bytes('SOL')),
+  BTC: '0xe98e2830be1a7e4156d656a7505e65d08c67660dc618072422e9c78053c261e9',
+  ETH: '0xaaaebeba3810b1e6b70781f14b2d72c1cb89c0b2b320c43bb67ff79f562f5ff4',
+  SOL: '0x0a3ec4fc70eaf64faf6eeda4e9b2bd4742a785464053aa23afad8bd24650e86f',
 }
 
 export const MARKETS = [

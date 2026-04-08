@@ -1,4 +1,4 @@
-/* ── Contract Addresses ────────────────────────────────────────────────── */
+/* ── Contract Addresses ─────────────────────────────────────────────────── */
 export const ADDRESSES = {
   PERP_CORE:       '0x82a475082618aAbeD4087F3F36DDCeDD1A904c92',
   PERP_CONFIG:     '0x7A5cbCC2e50F40dF5Fc2e723F068857919a08689',
@@ -7,13 +7,12 @@ export const ADDRESSES = {
   PERP_LIQUIDATOR: '0x5daEcC463f7AeD3CaC7FCd39eEfDfB08A2b0E9D7',
   ORDER_MANAGER:   '0xC575622f1D1B3ED658c8c78Ea4fA0133bfBB61d0',
   CROSS_MARGIN:    '0x96fD349713faA853cc0453a01C89EcA49ec9fA46',
-  USDC:            '0xA60523f6664309155FDa3C3b1bECDB2b420e52E3',
+  USDC:            '0x617b90652e30cd88f944decccb69441d8ce64a8c',
   PYTH:            '0xA2aa501b19aff244D90cc15a4Cf739D2725B5729',
-  SPOT_DEX:        '0x4D73a7F4d53E8b0D6616cb20E7eE97F09fCC2591',
-  FAUCET:          '0xea356c907aC8Aa7e66F09469C51f2416f16553Db',
+  FAUCET:          '0x3C2Cd8b05d6e31679ac1C04594583ba4CCD4445f',
 }
 
-/* ── ERC-20 + EIP-2612 Permit ABI ─────────────────────────────────────── */
+/* ── ERC-20 + EIP-2612 Permit ABI ──────────────────────────────────────── */
 export const ABI_USDC = [
   'function name() view returns (string)',
   'function version() view returns (string)',
@@ -26,7 +25,7 @@ export const ABI_USDC = [
   'function DOMAIN_SEPARATOR() view returns (bytes32)',
 ]
 
-/* ── Pyth Oracle ABI ──────────────────────────────────────────────────── */
+/* ── Pyth Oracle ABI ───────────────────────────────────────────────────── */
 export const ABI_PYTH = [
   'function getUpdateFee(bytes[] calldata updateData) view returns (uint256)',
   'function getPriceUnsafe(bytes32 id) view returns (tuple(int64 price, uint64 conf, int32 expo, uint256 publishTime))',
@@ -34,13 +33,13 @@ export const ABI_PYTH = [
   'function updatePriceFeeds(bytes[] calldata updateData) payable',
 ]
 
-/* ── PerpCore ABI ─────────────────────────────────────────────────────── */
+/* ── PerpCore ABI ──────────────────────────────────────────────────────── */
 export const ABI_PERP_CORE = [
-  /* 1-signature open: permit + pyth update + open in one tx */
+  /* 1-sig open: sign permit → pyth update → open, all in one tx */
   'function openWithPermitAndPriceUpdate(bytes32 key, bool isLong, uint8 leverage, uint256 collateral, bool reduceOnly, uint256 deadline, uint8 v, bytes32 r, bytes32 s, bytes[] calldata updateData) external payable returns (uint256 posId)',
-  /* 1-signature increase */
-  'function increaseWithPermitAndPriceUpdate(uint256 posId, uint256 collateral, uint8 leverage, uint256 deadline, uint8 v, bytes32 r, bytes32 s, bytes[] calldata updateData) external payable',
-  /* Close (pyth update + close in one tx) */
+  /* 1-sig increase: sign permit → pyth update → increase, all in one tx */
+  'function increaseWithPermitAndPriceUpdate(uint256 posId, uint256 extra, uint256 deadline, uint8 v, bytes32 r, bytes32 s, bytes[] calldata updateData) external payable',
+  /* Close: pyth update + close in one tx */
   'function closeWithPriceUpdate(uint256 posId, bytes[] calldata updateData) external payable',
   /* Partial close */
   'function partialCloseWithPriceUpdate(uint256 posId, uint256 collateralDelta, bytes[] calldata updateData) external payable',
@@ -49,57 +48,99 @@ export const ABI_PERP_CORE = [
   'event Closed(uint256 indexed posId, int256 pnl)',
 ]
 
-/* ── PerpConfig ABI ───────────────────────────────────────────────────── */
+/* ── PerpConfig ABI ────────────────────────────────────────────────────── */
 export const ABI_PERP_CONFIG = [
-  'function getMarkPrice(bytes32 key) view returns (uint256)',
+  /* Price queries — getMarkPrice requires forLong bool */
+  'function getMarkPrice(bytes32 key, bool forLong) view returns (uint256)',
   'function getIndexPrice(bytes32 key) view returns (uint256)',
-  'function getFundingRate(bytes32 key) view returns (int256)',
-  'function getOpenInterest(bytes32 key) view returns (uint256 longOI, uint256 shortOI)',
-  'function getAsset(bytes32 key) view returns (tuple(bytes32 key, string symbol, bool active, uint8 maxLeverage, uint256 maintenanceMargin, uint256 openFee, uint256 closeFee))',
-  'function getAllMarkPrices() view returns (bytes32[] memory keys, uint256[] memory prices)',
+  /* Funding */
+  'function computeFundingRate(bytes32 key) view returns (int256)',
+  'function getFundingState(bytes32 k) view returns (tuple(int256 cumulativeIndex, uint256 lastUpdateTime, uint256 longOI, uint256 shortOI))',
+  'function getFundingIndex(bytes32 k) view returns (int256)',
+  'function pendingFundingForPosition(bytes32 key, uint256 size, bool isLong, int256 entry) view returns (int256)',
+  /* Open interest */
+  'function getOI(bytes32 k) view returns (uint256 lo, uint256 so)',
+  /* Asset config */
+  'function getAsset(bytes32 k) view returns (tuple(bytes32 pythId, bool active, uint8 maxLeverage, uint256 maxOI, uint256 maxSkew, uint256 maxPositionSize, uint256 initialMarginBps, uint256 maintenanceMarginBps))',
+  'function validateAndGetAsset(bytes32 k) view returns (tuple(bytes32 pythId, bool active, uint8 maxLeverage, uint256 maxOI, uint256 maxSkew, uint256 maxPositionSize, uint256 initialMarginBps, uint256 maintenanceMarginBps))',
+  'function allAssetKeys(uint256) view returns (bytes32)',
+  'function totalAssets() view returns (uint256)',
+  /* Risk params */
+  'function feeBps() view returns (uint256)',
+  'function liquidationBonusBps() view returns (uint256)',
+  'function priceAge() view returns (uint256)',
 ]
 
-/* ── PerpStore ABI ────────────────────────────────────────────────────── */
+/* ── PerpStore ABI ─────────────────────────────────────────────────────── */
 export const ABI_PERP_STORE = [
-  'function getPosition(uint256 posId) view returns (tuple(uint256 id, address owner, bytes32 key, bool isLong, uint8 leverage, uint256 collateral, uint256 size, uint256 entryPrice, uint256 openTime, bool isOpen))',
-  'function getUserPositions(address user) view returns (uint256[] memory)',
-  'function getPositionCount() view returns (uint256)',
+  /* Position queries — struct fields: owner, assetKey, isLong, reduceOnly,
+     leverage, collateral, size, entryPrice, openTime, fundingEntry */
+  'function getPosition(uint256 posId) view returns (tuple(address owner, bytes32 assetKey, bool isLong, bool reduceOnly, uint8 leverage, uint256 collateral, uint256 size, uint256 entryPrice, uint256 openTime, int256 fundingEntry))',
+  'function positionExists(uint256 posId) view returns (bool)',
+  'function getUserPositions(address user) view returns (uint256[])',
+  'function nextPositionId() view returns (uint256)',
 ]
 
-/* ── PerpVault ABI ────────────────────────────────────────────────────── */
+/* ── PerpVault ABI ─────────────────────────────────────────────────────── */
 export const ABI_PERP_VAULT = [
   'function freeBalance() view returns (uint256)',
   'function reservedCollateral() view returns (uint256)',
   'function insuranceBalance() view returns (uint256)',
-  'function netPnl() view returns (int256)',
-  'function totalDeposited() view returns (uint256)',
+  'function feeBalance() view returns (uint256)',
+  'function netUnrealizedPnl() view returns (int256)',
+  'function maxWithdrawable() view returns (uint256)',
+  'function protocolHealth() view returns (uint256 free_, int256 pnl, uint256 safe_)',
 ]
 
-/* ── OrderManager ABI ────────────────────────────────────────────────── */
+/* ── OrderManager ABI ─────────────────────────────────────────────────── */
 export const ABI_ORDER_MANAGER = [
-  'function createLimitOrder(bytes32 key, bool isLong, uint8 leverage, uint256 collateral, uint256 triggerPrice) returns (uint256 orderId)',
-  'function createStopLoss(uint256 posId, uint256 triggerPrice) returns (uint256 orderId)',
-  'function createTakeProfit(uint256 posId, uint256 triggerPrice) returns (uint256 orderId)',
+  /* Create orders — all are payable (execution fee in ETH) */
+  'function createLimitOrder(bytes32 assetKey, bool isLong, uint8 leverage, uint256 collateral, bool reduceOnly, uint256 triggerPrice) external payable returns (uint256)',
+  'function createStopLoss(uint256 posId, uint256 triggerPrice, uint256 fractionBps) external payable returns (uint256)',
+  'function createTakeProfit(uint256 posId, uint256 triggerPrice, uint256 fractionBps) external payable returns (uint256)',
   'function cancelOrder(uint256 orderId)',
-  'function getUserOrders(address user) view returns (tuple(uint256 id, address owner, bytes32 key, bool isLong, uint8 leverage, uint256 collateral, uint256 triggerPrice, uint8 orderType, uint256 posId, bool active)[] memory)',
-  'event OrderCreated(uint256 indexed orderId, address indexed owner)',
-  'event OrderCancelled(uint256 indexed orderId)',
-  'event OrderFilled(uint256 indexed orderId)',
+  /* Queries */
+  'function getOrder(uint256 id) view returns (tuple(uint256 id, address trader, bytes32 assetKey, uint8 orderType, bool isLong, uint8 leverage, uint256 collateral, bool reduceOnly, uint256 posId, uint256 fractionBps, uint256 triggerPrice, bool triggerAbove, bool active, uint256 createdAt, uint256 executionFee))',
+  'function traderOrders(address t) view returns (uint256[])',
+  'function minExecFee() view returns (uint256)',
+  'function nextOrderId() view returns (uint256)',
+  /* Events */
+  'event OrderCreated(uint256 indexed id, address indexed trader, uint8 indexed t)',
+  'event OrderCancelled(uint256 indexed id, address indexed trader)',
+  'event OrderExecuted(uint256 indexed id, address indexed keeper, uint256 fee)',
+  'event OrderFailed(uint256 indexed id, string reason)',
 ]
 
-/* ── CrossMargin ABI ─────────────────────────────────────────────────── */
+/* ── CrossMarginManager ABI ───────────────────────────────────────────── */
 export const ABI_CROSS_MARGIN = [
-  'function depositWithPermit(uint256 amount, uint256 deadline, uint8 v, bytes32 r, bytes32 s)',
-  'function withdraw(uint256 amount)',
-  'function getAccount(address user) view returns (tuple(uint256 equity, uint256 usedMargin, int256 unrealizedPnl, uint256 freeMargin))',
-  'function openCrossWithPriceUpdate(bytes32 key, bool isLong, uint8 leverage, uint256 notionalSize, bytes[] calldata updateData) external payable',
-  'function closeCrossWithPriceUpdate(uint256 posId, bytes[] calldata updateData) external payable',
+  /* Deposits / withdrawals */
+  'function deposit(uint256 amt)',
+  'function depositWithPermit(uint256 amt, uint256 deadline, uint8 v, bytes32 r, bytes32 s)',
+  'function withdraw(uint256 amt)',
+  /* Position management */
+  'function openPosition(bytes32 key, bool isLong, uint8 leverage, uint256 collateral, bool reduceOnly) returns (uint256 posId)',
+  'function increasePosition(uint256 posId, uint256 extra)',
+  'function closePosition(uint256 posId, uint256 fracBps)',
+  /* Account queries */
+  'function getAccount(address trader) view returns (uint256 balance, uint256[] posIds)',
+  'function accountEquity(address trader) view returns (int256)',
+  'function accountMM(address trader) view returns (uint256)',
+  'function accountOwnerOf(uint256 posId) view returns (address)',
+  'function isLiquidatable(address trader) view returns (bool)',
+  /* Events */
+  'event Deposited(address indexed t, uint256 amt)',
+  'event Withdrawn(address indexed t, uint256 amt)',
+  'event PositionOpened(address indexed t, uint256 indexed posId, bytes32 key)',
+  'event PositionClosed(address indexed t, uint256 indexed posId, uint256 payout)',
+  'event PositionIncreased(address indexed t, uint256 indexed posId, uint256 extra)',
 ]
 
-/* ── Faucet ABI ──────────────────────────────────────────────────────── */
+/* ── Faucet ABI ───────────────────────────────────────────────────────── */
 export const ABI_FAUCET = [
   'function claim()',
-  'function canClaim(address) view returns (bool)',
-  'function cooldownRemaining(address) view returns (uint256)',
-  'function getBalance() view returns (uint256)',
+  'function canClaim(address user) view returns (bool)',
+  'function cooldownRemaining(address user) view returns (uint256)',
+  'function faucetBalance() view returns (uint256)',
+  'function claimAmount() view returns (uint256)',
+  'function cooldownPeriod() view returns (uint256)',
 ]

@@ -19,14 +19,14 @@ export function useVaultStats() {
           vault.freeBalance(),
           vault.reservedCollateral(),
           vault.insuranceBalance(),
-          vault.netPnl(),
+          vault.netUnrealizedPnl(),
         ])
         if (!alive) return
         setStats({
-          freeBalance:      Number(free)      / 1e18,
-          reservedCollateral: Number(reserved) / 1e18,
-          insuranceBalance: Number(insurance)  / 1e18,
-          netPnl:           Number(netPnl)     / 1e18,
+          freeBalance:        Number(free)      / 1e18,
+          reservedCollateral: Number(reserved)  / 1e18,
+          insuranceBalance:   Number(insurance)  / 1e18,
+          netPnl:             Number(netPnl)     / 1e18,
         })
       } catch (_) {}
       finally { if (alive) setLoading(false) }
