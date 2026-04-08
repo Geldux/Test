@@ -1,5 +1,6 @@
 {
-  "installCommand": "cd fuel-tracker && npm install",
-  "buildCommand": "cd fuel-tracker && npm run build",
-  "outputDirectory": "fuel-tracker/dist"
+  "buildCommand": "cd geldux-v2 && npm install && npm run build",
+  "outputDirectory": "geldux-v2/dist",
+  "installCommand": "cd geldux-v2 && npm install",
+  "framework": "vite"
 }
