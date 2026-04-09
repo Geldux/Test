@@ -242,6 +242,25 @@ export function useTrading({ onSuccess, onError } = {}) {
     })
   }, [run])
 
+  /* ── Partial close isolated position ────────────────────────────── */
+  const partialClosePosition = useCallback(async ({ posId, collateralDelta }) => {
+    return run('Partially closing position…', async () => {
+      const signer = getSigner()
+      if (!signer) throw new Error('Wallet not connected')
+
+      setStep('Fetching oracle price…')
+      const { updateData, fee } = await getPythData(signer)
+
+      setStep('Submitting partial close…')
+      const core = new Contract(ADDRESSES.PERP_CORE, ABI_PERP_CORE, signer)
+      const deltaRaw = parseUnits(String(Number(collateralDelta).toFixed(18)), 18)
+      const tx   = await core.partialCloseWithPriceUpdate(posId, deltaRaw, updateData, { value: fee })
+      setStep('Confirming on Base…')
+      const receipt = await waitTx(tx)
+      return { hash: tx.hash, receipt }
+    })
+  }, [run])
+
   /* ── Cross margin open position ──────────────────────────────────── */
   const crossOpenPosition = useCallback(async ({ sym, isLong, leverage, collateralUsd }) => {
     return run(`Opening cross ${isLong ? 'Long' : 'Short'} ${sym}…`, async () => {
@@ -290,7 +309,7 @@ export function useTrading({ onSuccess, onError } = {}) {
 
   return {
     pending, step,
-    openPosition, increasePosition, closePosition,
+    openPosition, increasePosition, closePosition, partialClosePosition,
     createLimitOrder, createStopLoss, createTakeProfit, cancelOrder,
     crossDeposit, crossWithdraw, crossOpenPosition, crossClosePosition,
     claimFaucet,

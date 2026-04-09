@@ -47,9 +47,9 @@ export default function App() {
   /* ── trading actions ─────────────────────────────────────────── */
   const {
     pending, step,
-    openPosition, increasePosition, closePosition,
+    openPosition, increasePosition, closePosition, partialClosePosition,
     createLimitOrder, createStopLoss, createTakeProfit, cancelOrder,
-    crossDeposit, crossWithdraw,
+    crossDeposit, crossWithdraw, crossOpenPosition, crossClosePosition,
     claimFaucet,
   } = useTrading()
 
@@ -66,8 +66,11 @@ export default function App() {
   const handleTrade = useCallback(async ({ type, sym: s, isLong, leverage, collateralUsd, triggerPrice, mode }) => {
     try {
       if (type === 'open') {
-        const { hash } = await openPosition({ sym: s, isLong, leverage, collateralUsd })
-        toast.success(`Opened ${isLong ? 'Long' : 'Short'} ${s} · ${th(hash)}`)
+        const isCross = mode === 'Cross'
+        const { hash } = isCross
+          ? await crossOpenPosition({ sym: s, isLong, leverage, collateralUsd })
+          : await openPosition({ sym: s, isLong, leverage, collateralUsd })
+        toast.success(`Opened ${isCross ? 'Cross ' : ''}${isLong ? 'Long' : 'Short'} ${s} · ${th(hash)}`)
         pts.onOpen(hash, s, collateralUsd)
         setTimeout(refresh, 3000)
       } else if (type === 'limit') {
@@ -78,20 +81,33 @@ export default function App() {
     } catch (e) {
       toast.error(e?.reason || e?.message || 'Transaction failed')
     }
-  }, [openPosition, createLimitOrder, pts, refresh])
+  }, [openPosition, crossOpenPosition, createLimitOrder, pts, refresh])
 
   /* ── close handler ───────────────────────────────────────────── */
   const handleClose = useCallback(async (posId, pct = 100) => {
     const pos = positions.find((p) => p.id === posId)
+    const isCrossPos = crossAccount?.posIds?.includes(posId)
     try {
-      const { hash } = await closePosition({ posId, sym: pos?.sym || 'BTC' })
-      toast.success(`Closed ${pos?.sym || 'position'} · ${th(hash)}`)
+      let hash
+      if (isCrossPos) {
+        /* cross-margin close — fractionBps: 10000 = full, else partial */
+        const fractionBps = Math.round(pct * 100)
+        ;({ hash } = await crossClosePosition({ posId, fractionBps }))
+      } else if (pct < 100 && pos?.collateral) {
+        /* partial close — reduce collateral by requested % */
+        const collateralDelta = pos.collateral * pct / 100
+        ;({ hash } = await partialClosePosition({ posId, collateralDelta }))
+      } else {
+        /* full isolated close */
+        ;({ hash } = await closePosition({ posId, sym: pos?.sym || 'BTC' }))
+      }
+      toast.success(`${pct < 100 ? `Partially closed (${pct}%)` : 'Closed'} ${pos?.sym || 'position'} · ${th(hash)}`)
       if (pos) pts.onClose(posId, pos.sym, 0)
       setTimeout(refresh, 3000)
     } catch (e) {
       toast.error(e?.reason || e?.message || 'Close failed')
     }
-  }, [closePosition, positions, pts, refresh])
+  }, [closePosition, partialClosePosition, crossClosePosition, crossAccount, positions, pts, refresh])
 
   /* ── SL/TP handler ───────────────────────────────────────────── */
   const handleSlTp = useCallback(async (posId, type, price) => {
