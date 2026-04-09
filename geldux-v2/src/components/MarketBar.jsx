@@ -1,19 +1,19 @@
 import { MARKETS } from '@/config/markets'
 import { fmtPriceRaw, fmtOI, fmtFunding } from '@/utils/format'
 
-/* ── Desktop sidebar ────────────────────────────────────────────────────── */
+/* ── Desktop sidebar market list ───────────────────────────────── */
 export function DesktopMarketBar({ prices, oi, funding, selected, onSelect }) {
   return (
     <aside className="d-sidebar desktop-only">
       <div className="d-sidebar-title">Markets</div>
       {MARKETS.map((m) => {
-        const price = prices[m.sym]?.price || prices[m.sym]?.mark
+        const p     = prices[m.sym]?.price || prices[m.sym]?.mark
         const long  = oi[m.sym]?.longOI  || 0
         const short = oi[m.sym]?.shortOI || 0
         const total = long + short || 1
-        const longPct  = Math.round(long  / total * 100)
-        const shortPct = 100 - longPct
-        const fr = funding[m.sym] || 0
+        const lPct  = Math.round(long  / total * 100)
+        const sPct  = 100 - lPct
+        const fr    = funding[m.sym] || 0
 
         return (
           <div
@@ -23,37 +23,55 @@ export function DesktopMarketBar({ prices, oi, funding, selected, onSelect }) {
           >
             <div className="market-item-row1">
               <span className="market-sym">{m.sym}</span>
-              <span className="market-price">{fmtPriceRaw(price)}</span>
+              <span className="market-price mono">{fmtPriceRaw(p)}</span>
             </div>
             <div className="market-item-row2">
               <span className={`market-funding ${fr >= 0 ? 'pos' : 'neg'}`}>{fmtFunding(fr)}</span>
-              <span style={{ fontSize: 11, color: 'var(--text-3)' }}>
-                {fmtOI(long + short)}
-              </span>
+              <span style={{ fontSize: 11, color: 'var(--text-3)' }}>{fmtOI(long + short)}</span>
             </div>
             <div className="market-oi-bar-wrap">
               <div className="market-oi-label">
-                <span className="pos" style={{ fontSize: 10 }}>L {longPct}%</span>
-                <span className="neg" style={{ fontSize: 10 }}>S {shortPct}%</span>
+                <span className="pos" style={{ fontSize: 10 }}>L {lPct}%</span>
+                <span className="neg" style={{ fontSize: 10 }}>S {sPct}%</span>
               </div>
               <div className="oi-bar">
-                <div className="oi-bar-long"  style={{ width: `${longPct}%` }} />
-                <div className="oi-bar-short" style={{ width: `${shortPct}%` }} />
+                <div className="oi-bar-long"  style={{ width: `${lPct}%` }} />
+                <div className="oi-bar-short" style={{ width: `${sPct}%` }} />
               </div>
             </div>
           </div>
         )
       })}
+
+      {/* Intelligence placeholder cards */}
+      <div style={{ marginTop: 'auto', padding: '10px 14px', borderTop: '1px solid var(--border)' }}>
+        <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-4)', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 8 }}>
+          Signals
+        </div>
+        {[
+          { label: 'Trending',   value: 'BTC',  icon: '↑' },
+          { label: 'High OI',    value: 'ETH',  icon: '◉' },
+          { label: 'Rate Alert', value: 'SOL+', icon: '⚡' },
+        ].map((s) => (
+          <div key={s.label} style={{
+            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+            padding: '4px 0', fontSize: 12, color: 'var(--text-3)',
+          }}>
+            <span>{s.label}</span>
+            <span style={{ fontWeight: 700, color: 'var(--text-2)' }}>{s.icon} {s.value}</span>
+          </div>
+        ))}
+      </div>
     </aside>
   )
 }
 
-/* ── Mobile chips ────────────────────────────────────────────────────────── */
+/* ── Mobile horizontal chip strip ──────────────────────────────── */
 export function MobileMarketChips({ prices, selected, onSelect }) {
   return (
     <div className="m-market-chips mobile-only">
       {MARKETS.map((m) => {
-        const price = prices[m.sym]?.price || prices[m.sym]?.mark
+        const p = prices[m.sym]?.price || prices[m.sym]?.mark
         return (
           <button
             key={m.sym}
@@ -61,7 +79,7 @@ export function MobileMarketChips({ prices, selected, onSelect }) {
             onClick={() => onSelect(m.sym)}
           >
             {m.sym}
-            <span className="m-chip-sub"> {fmtPriceRaw(price)}</span>
+            <span className="m-chip-sub">{fmtPriceRaw(p)}</span>
           </button>
         )
       })}

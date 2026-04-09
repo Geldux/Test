@@ -1,34 +1,33 @@
 import { fmtPriceRaw, fmtOI, fmtFunding } from '@/utils/format'
 
-/* ── Desktop hero + stats strip ─────────────────────────────────────────── */
+/* ── Desktop price hero + stats strip ──────────────────────────── */
 export function DesktopMarketStats({ sym, prices, oi, funding }) {
-  const price = prices[sym]?.price || prices[sym]?.mark
+  const p     = prices[sym]?.price || prices[sym]?.mark
   const long  = oi[sym]?.longOI  || 0
   const short = oi[sym]?.shortOI || 0
   const total = long + short || 1
-  const longPct  = Math.round(long  / total * 100)
-  const shortPct = 100 - longPct
-  const fr = funding[sym] || 0
+  const lPct  = Math.round(long / total * 100)
+  const fr    = funding[sym] || 0
 
   const stats = [
-    { label: 'Long OI',     value: fmtOI(long),          cls: 'pos' },
-    { label: 'Short OI',    value: fmtOI(short),         cls: 'neg' },
-    { label: 'Funding/hr',  value: fmtFunding(fr),       cls: fr >= 0 ? 'pos' : 'neg' },
-    { label: 'Mark Long',   value: fmtPriceRaw(price),   cls: '' },
-    { label: 'Mark Short',  value: fmtPriceRaw(price),   cls: '' },
+    { label: 'Long OI',    value: fmtOI(long),        cls: 'pos' },
+    { label: 'Short OI',   value: fmtOI(short),       cls: 'neg' },
+    { label: 'Funding/hr', value: fmtFunding(fr),     cls: fr >= 0 ? 'pos' : 'neg' },
+    { label: 'Mark Price', value: fmtPriceRaw(p),     cls: '' },
+    { label: 'L/S Ratio',  value: `${lPct}% / ${100 - lPct}%`, cls: '' },
   ]
 
   return (
     <div className="market-hero desktop-only">
-      <div>
-        <div className="market-hero-sym">{sym}/USD · Perpetual</div>
-        <div className="market-hero-price">{fmtPriceRaw(price)}</div>
+      <div style={{ flexShrink: 0 }}>
+        <div className="market-hero-sym">{sym} / USDC · Perp</div>
+        <div className="market-hero-price mono">{fmtPriceRaw(p)}</div>
       </div>
       <div className="stats-strip">
         {stats.map((s) => (
           <div key={s.label} className="stats-strip-item">
             <div className="stat-label">{s.label}</div>
-            <div className={`stat-value ${s.cls}`}>{s.value}</div>
+            <div className={`stat-val mono ${s.cls}`}>{s.value}</div>
           </div>
         ))}
       </div>
@@ -36,58 +35,60 @@ export function DesktopMarketStats({ sym, prices, oi, funding }) {
   )
 }
 
-/* ── Desktop OI imbalance card ───────────────────────────────────────────── */
+/* ── Desktop OI imbalance card ──────────────────────────────────── */
 export function OICard({ sym, oi }) {
   const long  = oi[sym]?.longOI  || 0
   const short = oi[sym]?.shortOI || 0
   const total = long + short || 1
-  const longPct  = Math.round(long  / total * 100)
-  const shortPct = 100 - longPct
+  const lPct  = Math.round(long / total * 100)
+  const sPct  = 100 - lPct
 
   return (
-    <div className="oi-card desktop-only">
+    <div className="oi-card card desktop-only" style={{ marginTop: 12 }}>
       <div className="oi-card-header">
-        <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-2)' }}>Open Interest</span>
-        <span style={{ fontSize: 12, fontFamily: 'var(--font-mono)', color: 'var(--text-3)' }}>
-          {fmtOI(long + short)} total
+        <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+          Open Interest
+        </span>
+        <span className="mono" style={{ fontSize: 12, color: 'var(--text-3)' }}>
+          {fmtOI(long + short)}
         </span>
       </div>
-      <div className="oi-bar">
-        <div className="oi-bar-long"  style={{ width: `${longPct}%` }} />
-        <div className="oi-bar-short" style={{ width: `${shortPct}%` }} />
+      <div className="oi-bar" style={{ height: 5 }}>
+        <div className="oi-bar-long"  style={{ width: `${lPct}%` }} />
+        <div className="oi-bar-short" style={{ width: `${sPct}%` }} />
       </div>
       <div className="oi-card-labels">
-        <span className="pos" style={{ fontSize: 11, fontWeight: 600 }}>▲ Long {longPct}% · {fmtOI(long)}</span>
-        <span className="neg" style={{ fontSize: 11, fontWeight: 600 }}>{fmtOI(short)} · {shortPct}% Short ▼</span>
+        <span className="pos" style={{ fontSize: 11, fontWeight: 700 }}>▲ Long {lPct}% · {fmtOI(long)}</span>
+        <span className="neg" style={{ fontSize: 11, fontWeight: 700 }}>{fmtOI(short)} · {sPct}% ▼</span>
       </div>
     </div>
   )
 }
 
-/* ── Mobile market stats ─────────────────────────────────────────────────── */
+/* ── Mobile market stats ────────────────────────────────────────── */
 export function MobileMarketStats({ sym, prices, oi, funding }) {
-  const price = prices[sym]?.price || prices[sym]?.mark
-  const long  = oi[sym]?.longOI  || 0
+  const p    = prices[sym]?.price || prices[sym]?.mark
+  const long = oi[sym]?.longOI  || 0
   const short = oi[sym]?.shortOI || 0
-  const fr    = funding[sym] || 0
+  const fr   = funding[sym] || 0
 
   return (
     <div className="m-market-stats mobile-only">
-      <div className="m-price-hero">{fmtPriceRaw(price)}</div>
-      <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>{sym} · Perpetual</div>
+      <div style={{ fontSize: 11, color: 'var(--text-3)', fontWeight: 600, marginBottom: 3 }}>
+        {sym}/USDC · Perpetual
+      </div>
+      <div className="m-price-hero mono">{fmtPriceRaw(p)}</div>
       <div className="m-stats-row">
-        <div className="m-stat-item">
-          <div className="stat-label">Long OI</div>
-          <div className="stat-value pos">{fmtOI(long)}</div>
-        </div>
-        <div className="m-stat-item">
-          <div className="stat-label">Short OI</div>
-          <div className="stat-value neg">{fmtOI(short)}</div>
-        </div>
-        <div className="m-stat-item">
-          <div className="stat-label">Funding/hr</div>
-          <div className={`stat-value ${fr >= 0 ? 'pos' : 'neg'}`}>{fmtFunding(fr)}</div>
-        </div>
+        {[
+          { label: 'Long OI',    value: fmtOI(long),    cls: 'pos' },
+          { label: 'Short OI',   value: fmtOI(short),   cls: 'neg' },
+          { label: 'Funding/hr', value: fmtFunding(fr), cls: fr >= 0 ? 'pos' : 'neg' },
+        ].map((s) => (
+          <div key={s.label} className="m-stat-item">
+            <div className="stat-label">{s.label}</div>
+            <div className={`stat-val mono ${s.cls}`}>{s.value}</div>
+          </div>
+        ))}
       </div>
     </div>
   )
