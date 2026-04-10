@@ -3,18 +3,40 @@ import { Contract, parseUnits, Signature } from 'ethers'
 import { ADDRESSES, ABI_USDC, ABI_PYTH, ABI_PERP_CORE, ABI_ORDER_MANAGER, ABI_CROSS_MARGIN, ABI_FAUCET } from '@/config/contracts'
 import { CHAIN_ID, PERMIT_DEADLINE_SECONDS } from '@/config/chain'
 import { MARKETS } from '@/config/markets'
-import { getSigner, getAccount } from './useWallet'
+import { getSigner, getAccount, getReadProvider } from './useWallet'
 import { fetchVaas } from './usePrices'
 
 /* ── Permit helper ───────────────────────────────────────────────────── */
 async function signPermit(signer, spender, amount) {
-  const usdc = new Contract(ADDRESSES.USDC, ABI_USDC, signer)
-  /* Fetch name, version, and nonce from chain — never hardcode version */
-  const [name, version, nonce] = await Promise.all([
+  /* Always derive owner from signer — do not rely on module-level cache */
+  const owner = await signer.getAddress()
+  const usdc  = new Contract(ADDRESSES.USDC, ABI_USDC, signer)
+
+  /* Fetch name + version from chain; version fallback is '1' (standard default) */
+  const [name, version] = await Promise.all([
     usdc.name().catch(() => 'USD Coin'),
-    usdc.version().catch(() => '2'),
-    usdc.nonces(getAccount()),
+    usdc.version().catch(() => '1'),
   ])
+
+  /* Fetch nonce: try signer provider first, fall back to read provider, then 0n.
+     CALL_EXCEPTION with data=null means MetaMask's RPC had an issue — the read
+     provider is a plain JsonRpcProvider that bypasses MetaMask's internal cache. */
+  let nonce = 0n
+  try {
+    nonce = await usdc.nonces(owner)
+  } catch (_signerErr) {
+    try {
+      const rp = getReadProvider()
+      if (rp) {
+        const usdcRp = new Contract(ADDRESSES.USDC, ABI_USDC, rp)
+        nonce = await usdcRp.nonces(owner)
+        console.log('[signPermit] nonce via read provider:', nonce.toString())
+      }
+    } catch (_rpErr) {
+      console.warn('[signPermit] nonces() failed on both providers, using 0n')
+    }
+  }
+
   const deadline = Math.floor(Date.now() / 1000) + PERMIT_DEADLINE_SECONDS
   const domain   = { name, version, chainId: CHAIN_ID, verifyingContract: ADDRESSES.USDC }
   const types    = {
@@ -26,13 +48,32 @@ async function signPermit(signer, spender, amount) {
       { name: 'deadline', type: 'uint256' },
     ],
   }
-  const message = { owner: getAccount(), spender, value: amount, nonce, deadline }
+  const message = { owner, spender, value: amount, nonce, deadline }
   console.log('[signPermit] domain:', JSON.stringify({ ...domain, chainId: Number(domain.chainId) }))
-  console.log('[signPermit] spender:', spender, '| amount:', amount.toString(), '| nonce:', nonce.toString(), '| deadline:', deadline)
+  console.log('[signPermit] owner:', owner, '| spender:', spender, '| amount:', amount.toString(), '| nonce:', nonce.toString(), '| deadline:', deadline)
   const sig   = await signer.signTypedData(domain, types, message)
   const { v, r, s } = Signature.from(sig)
   console.log('[signPermit] v:', v, '| r:', r, '| s:', s)
   return { v, r, s, deadline }
+}
+
+/* ── Retry sendTransaction for RPC rate limiting ─────────────────────── */
+async function sendWithRetry(contractFn, maxRetries = 4) {
+  let delay = 2000
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await contractFn()
+    } catch (e) {
+      const isRateLimit = e?.code === -32603 ||
+        e?.message?.includes('rate limit') ||
+        e?.message?.includes('being rate limited') ||
+        e?.message?.includes('coalesce')
+      if (!isRateLimit || attempt === maxRetries) throw e
+      console.warn(`[sendWithRetry] rate limited, retry ${attempt}/${maxRetries} in ${delay}ms`)
+      await new Promise((r) => setTimeout(r, delay))
+      delay *= 2
+    }
+  }
 }
 
 /* ── Pyth VAA + fee ──────────────────────────────────────────────────── */
@@ -95,8 +136,8 @@ export function useTrading({ onSuccess, onError } = {}) {
       const collateralRaw = parseUnits(String(Number(collateralUsd).toFixed(18)), 18)
 
       setStep('Signing permit…')
-      /* Spender must be PerpVault — PerpCore routes USDC into vault internally */
-      const { v, r, s, deadline } = await signPermit(signer, ADDRESSES.PERP_VAULT, collateralRaw)
+      /* Spender must be PerpCore — it is the contract that calls transferFrom */
+      const { v, r, s, deadline } = await signPermit(signer, ADDRESSES.PERP_CORE, collateralRaw)
 
       setStep('Fetching oracle price…')
       const { updateData, fee } = await getPythData(signer)
@@ -122,8 +163,8 @@ export function useTrading({ onSuccess, onError } = {}) {
       const collateralRaw = parseUnits(String(Number(collateralUsd).toFixed(18)), 18)
 
       setStep('Signing permit…')
-      /* Spender must be PerpVault — same as open */
-      const { v, r, s, deadline } = await signPermit(signer, ADDRESSES.PERP_VAULT, collateralRaw)
+      /* Spender must be PerpCore — same as open */
+      const { v, r, s, deadline } = await signPermit(signer, ADDRESSES.PERP_CORE, collateralRaw)
 
       setStep('Fetching oracle price…')
       const { updateData, fee } = await getPythData(signer)
@@ -305,7 +346,8 @@ export function useTrading({ onSuccess, onError } = {}) {
       if (!market) throw new Error('Unknown market')
       const cRaw    = parseUnits(String(Number(collateralUsd).toFixed(18)), 18)
       const cross   = new Contract(ADDRESSES.CROSS_MARGIN, ABI_CROSS_MARGIN, signer)
-      const tx      = await cross.openPosition(market.key, isLong, leverage, cRaw, false)
+      console.log('[crossOpenPosition] key:', market.key, '| isLong:', isLong, '| leverage:', leverage, '| cRaw:', cRaw.toString())
+      const tx      = await sendWithRetry(() => cross.openPosition(market.key, isLong, Number(leverage), cRaw, false))
       const receipt = await waitTx(tx)
       return { hash: tx.hash, receipt }
     })

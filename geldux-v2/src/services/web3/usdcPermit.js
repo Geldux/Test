@@ -7,9 +7,17 @@
  * openWithPermitAndPriceUpdate / increaseWithPermitAndPriceUpdate /
  * depositWithPermit — no separate approval transaction needed.
  */
-import { Contract, Signature } from 'ethers'
-import { CHAIN_ID, PERMIT_DEADLINE_SECONDS } from '@/config/chain'
+import { Contract, Signature, JsonRpcProvider } from 'ethers'
+import { CHAIN_ID, PERMIT_DEADLINE_SECONDS, RPC_LIST } from '@/config/chain'
 import { ADDRESSES, ABI_USDC } from '@/config/contracts'
+
+function getReadProvider() {
+  const urls = RPC_LIST.filter((u) => !u.endsWith('/undefined') && !u.endsWith('/null'))
+  for (const url of (urls.length ? urls : RPC_LIST)) {
+    try { return new JsonRpcProvider(url) } catch (_) {}
+  }
+  return null
+}
 
 /**
  * @param {import('ethers').Signer} signer
@@ -20,14 +28,34 @@ import { ADDRESSES, ABI_USDC } from '@/config/contracts'
 export async function signPermit(signer, spender, amount) {
   const usdc    = new Contract(ADDRESSES.USDC, ABI_USDC, signer)
   const owner   = await signer.getAddress()
-  const [name, nonce] = await Promise.all([
+
+  /* Fetch name + version; version fallback is '1' (standard default for custom tokens) */
+  const [name, version] = await Promise.all([
     usdc.name().catch(() => 'USD Coin'),
-    usdc.nonces(owner),
+    usdc.version().catch(() => '1'),
   ])
+
+  /* Fetch nonce: try signer provider first, fall back to read provider, then 0n */
+  let nonce = 0n
+  try {
+    nonce = await usdc.nonces(owner)
+  } catch (_signerErr) {
+    try {
+      const rp = getReadProvider()
+      if (rp) {
+        const usdcRp = new Contract(ADDRESSES.USDC, ABI_USDC, rp)
+        nonce = await usdcRp.nonces(owner)
+        console.log('[signPermit] nonce via read provider:', nonce.toString())
+      }
+    } catch (_rpErr) {
+      console.warn('[signPermit] nonces() failed on both providers, using 0n')
+    }
+  }
+
   const deadline = Math.floor(Date.now() / 1000) + PERMIT_DEADLINE_SECONDS
   const domain   = {
     name,
-    version: '2',
+    version,
     chainId: CHAIN_ID,
     verifyingContract: ADDRESSES.USDC,
   }
@@ -41,6 +69,8 @@ export async function signPermit(signer, spender, amount) {
     ],
   }
   const message = { owner, spender, value: amount, nonce, deadline }
+  console.log('[signPermit] domain:', JSON.stringify({ ...domain, chainId: Number(domain.chainId) }))
+  console.log('[signPermit] owner:', owner, '| spender:', spender, '| nonce:', nonce.toString())
   const sig     = await signer.signTypedData(domain, types, message)
   const { v, r, s } = Signature.from(sig)
   return { v, r, s, deadline }
