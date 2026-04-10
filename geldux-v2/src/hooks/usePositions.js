@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Contract } from 'ethers'
+import { Contract, formatUnits } from 'ethers'
 import { ADDRESSES, ABI_PERP_STORE, ABI_ORDER_MANAGER, ABI_CROSS_MARGIN } from '@/config/contracts'
-import { getReadProvider, getAccount } from './useWallet'
+import { getReadProvider, getProvider, getAccount } from './useWallet'
 
 export function usePositions(account) {
   const [positions,    setPositions]    = useState([])
@@ -12,7 +12,8 @@ export function usePositions(account) {
 
   const refresh = useCallback(async () => {
     const addr = account || getAccount()
-    const rp   = getReadProvider()
+    /* Prefer wallet provider (already authenticated) over cold read provider */
+    const rp = getProvider() || getReadProvider()
     if (!addr || !rp) {
       setPositions([]); setOrders([]); setCrossAccount(null)
       return
@@ -104,8 +105,11 @@ export function usePositions(account) {
       setPositions(posList)
       setOrders(orderList)
       setCrossAccount(crossAcc2)
-    } catch (_) {}
-    finally { if (mountedRef.current) setLoading(false) }
+    } catch (e) {
+      console.error('[usePositions] refresh failed:', e?.message || e)
+    } finally {
+      if (mountedRef.current) setLoading(false)
+    }
   }, [account])
 
   useEffect(() => {

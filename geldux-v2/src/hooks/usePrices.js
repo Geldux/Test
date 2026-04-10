@@ -3,7 +3,7 @@ import { Contract } from 'ethers'
 import { HERMES_URL } from '@/config/chain'
 import { MARKETS, PYTH_IDS } from '@/config/markets'
 import { ADDRESSES, ABI_PERP_CONFIG, ABI_PYTH } from '@/config/contracts'
-import { getReadProvider } from './useWallet'
+import { getReadProvider, getProvider } from './useWallet'
 
 /* Module-level price cache — shared across hook instances */
 const _prices   = {}   /* sym → { price, conf, publishTime } */
@@ -34,7 +34,7 @@ async function fetchHermesPrices() {
 }
 
 async function fetchOnChainData() {
-  const rp = getReadProvider()
+  const rp = getProvider() || getReadProvider()
   if (!rp) return
   try {
     const cfg = new Contract(ADDRESSES.PERP_CONFIG, ABI_PERP_CONFIG, rp)

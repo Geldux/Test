@@ -11,10 +11,14 @@ export function getProvider()     { return _provider }
 export function getSigner()       { return _signer }
 export function getAccount()      { return _account }
 export function getReadProvider() {
-  if (!_readProv) {
-    try { _readProv = new JsonRpcProvider(RPC_LIST[0]) } catch (_) {}
+  if (_readProv) return _readProv
+  /* Skip Alchemy if API key is not configured (URL ends in /undefined) */
+  const urls = RPC_LIST.filter((u) => !u.endsWith('/undefined') && !u.endsWith('/null'))
+  const tryList = urls.length ? urls : RPC_LIST
+  for (const url of tryList) {
+    try { _readProv = new JsonRpcProvider(url); return _readProv } catch (_) {}
   }
-  return _readProv
+  return null
 }
 
 async function ensureNetwork(provider) {

@@ -1,23 +1,34 @@
 import { useState, useEffect } from 'react'
-import { Contract } from 'ethers'
+import { Contract, formatUnits } from 'ethers'
 import { MARKETS, LEVERAGE_MARKS } from '@/config/markets'
 import { ADDRESSES, ABI_USDC } from '@/config/contracts'
 import { fmtPriceRaw, fmtUsdc, estLiqPrice } from '@/utils/format'
-import { getReadProvider } from '@/hooks/useWallet'
+import { getProvider, getReadProvider } from '@/hooks/useWallet'
 
 /* ── USDC balance hook ──────────────────────────────────────────── */
 function useUsdcBalance(account) {
   const [bal, setBal] = useState(null)
   useEffect(() => {
     if (!account) { setBal(null); return }
-    const rp = getReadProvider()
-    if (!rp) return
     let cancelled = false
-    const load = () => {
-      new Contract(ADDRESSES.USDC, ABI_USDC, rp)
-        .balanceOf(account)
-        .then((b) => { if (!cancelled) setBal(Number(b) / 1e18) })
-        .catch(() => {})
+    const load = async () => {
+      /* Prefer wallet provider (already connected) over read provider */
+      const provider = getProvider() || getReadProvider()
+      if (!provider) {
+        console.warn('[useUsdcBalance] no provider available')
+        return
+      }
+      try {
+        const raw = await new Contract(ADDRESSES.USDC, ABI_USDC, provider).balanceOf(account)
+        const formatted = parseFloat(formatUnits(raw, 18))
+        console.log('[useUsdcBalance] account:', account,
+          '| USDC addr:', ADDRESSES.USDC,
+          '| raw:', raw.toString(),
+          '| formatted:', formatted)
+        if (!cancelled) setBal(formatted)
+      } catch (e) {
+        console.error('[useUsdcBalance] balanceOf failed:', e?.message || e)
+      }
     }
     load()
     const id = setInterval(load, 10_000)
@@ -143,7 +154,7 @@ export function TradingPanel({ sym, prices, account, isConnecting, onTrade, onCo
           <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
             <span className="bal-label">Bal:</span>
             <span className="bal-value">
-              {usdcBal != null ? usdcBal.toFixed(2) + ' USDC' : account ? '…' : '—'}
+              {usdcBal != null ? usdcBal.toFixed(2) + ' USDC' : account ? '0.00 USDC' : '—'}
             </span>
           </span>
         </div>
