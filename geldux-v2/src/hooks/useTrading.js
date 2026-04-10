@@ -261,6 +261,21 @@ export function useTrading({ onSuccess, onError } = {}) {
     })
   }, [run])
 
+  /* ── Cross margin increase position ────────────────────────────── */
+  /* Draws extra collateral from the trader's existing cross-margin   */
+  /* account balance — no permit needed.                              */
+  const crossIncreasePosition = useCallback(async ({ posId, collateralUsd }) => {
+    return run('Increasing cross position…', async () => {
+      const signer  = getSigner()
+      if (!signer) throw new Error('Wallet not connected')
+      const extraRaw = parseUnits(String(Number(collateralUsd).toFixed(18)), 18)
+      const cross    = new Contract(ADDRESSES.CROSS_MARGIN, ABI_CROSS_MARGIN, signer)
+      const tx       = await cross.increasePosition(posId, extraRaw)
+      const receipt  = await waitTx(tx)
+      return { hash: tx.hash, receipt }
+    })
+  }, [run])
+
   /* ── Cross margin open position ──────────────────────────────────── */
   const crossOpenPosition = useCallback(async ({ sym, isLong, leverage, collateralUsd }) => {
     return run(`Opening cross ${isLong ? 'Long' : 'Short'} ${sym}…`, async () => {
@@ -311,7 +326,7 @@ export function useTrading({ onSuccess, onError } = {}) {
     pending, step,
     openPosition, increasePosition, closePosition, partialClosePosition,
     createLimitOrder, createStopLoss, createTakeProfit, cancelOrder,
-    crossDeposit, crossWithdraw, crossOpenPosition, crossClosePosition,
+    crossDeposit, crossWithdraw, crossOpenPosition, crossClosePosition, crossIncreasePosition,
     claimFaucet,
   }
 }

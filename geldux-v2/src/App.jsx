@@ -49,7 +49,7 @@ export default function App() {
     pending, step,
     openPosition, increasePosition, closePosition, partialClosePosition,
     createLimitOrder, createStopLoss, createTakeProfit, cancelOrder,
-    crossDeposit, crossWithdraw, crossOpenPosition, crossClosePosition,
+    crossDeposit, crossWithdraw, crossOpenPosition, crossClosePosition, crossIncreasePosition,
     claimFaucet,
   } = useTrading()
 
@@ -128,14 +128,21 @@ export default function App() {
 
   /* ── increase handler ────────────────────────────────────────── */
   const handleIncrease = useCallback(async (posId, collateralUsd, sym) => {
+    const isCrossPos = crossAccount?.posIds?.includes(posId)
     try {
-      const { hash } = await increasePosition({ posId, sym: sym || 'BTC', collateralUsd })
+      let hash
+      if (isCrossPos) {
+        /* cross: draws from cross-margin balance, no permit needed */
+        ;({ hash } = await crossIncreasePosition({ posId, collateralUsd }))
+      } else {
+        ;({ hash } = await increasePosition({ posId, sym: sym || 'BTC', collateralUsd }))
+      }
       toast.success(`Position increased · ${th(hash)}`)
       setTimeout(refresh, 3000)
     } catch (e) {
       toast.error(e?.reason || e?.message || 'Increase failed')
     }
-  }, [increasePosition, refresh])
+  }, [increasePosition, crossIncreasePosition, crossAccount, refresh])
 
   /* ── cancel order ────────────────────────────────────────────── */
   const handleCancelOrder = useCallback(async (orderId) => {
