@@ -41,7 +41,7 @@ const ORDER_TYPES  = ['Market', 'Limit']
 const MARGIN_MODES = ['Isolated', 'Cross']
 
 /* ── Main component ─────────────────────────────────────────────── */
-export function TradingPanel({ sym, prices, account, isConnecting, onTrade, onConnect, pending, step }) {
+export function TradingPanel({ sym, prices, account, isConnecting, onTrade, onConnect, pending, step, crossAccount }) {
   const [mode,       setMode]       = useState('Isolated') // Isolated | Cross
   const [orderType,  setOrderType]  = useState('Market')   // Market | Limit
   const [side,       setSide]       = useState('long')     // long | short
@@ -50,6 +50,11 @@ export function TradingPanel({ sym, prices, account, isConnecting, onTrade, onCo
   const [leverage,   setLeverage]   = useState(10)
 
   const usdcBal   = useUsdcBalance(account)
+  const isCross   = mode === 'Cross'
+  /* Cross mode: balance = deposited cross-margin balance, not wallet */
+  const crossBal  = crossAccount?.freeMargin ?? crossAccount?.balance ?? null
+  const activeBal = isCross ? crossBal : usdcBal
+
   const market    = MARKETS.find((m) => m.sym === sym) || MARKETS[0]
   const markPrice = prices[sym]?.price || prices[sym]?.mark || 0
   const col       = parseFloat(collateral) || 0
@@ -58,18 +63,18 @@ export function TradingPanel({ sym, prices, account, isConnecting, onTrade, onCo
   const entryP    = orderType === 'Limit' ? lim : markPrice
   const liqPrice  = col > 0 ? estLiqPrice(entryP, leverage, side === 'long') : null
   const fee       = size * 0.00045
-  const funding   = 0 // displayed as — until on-chain data available
 
   /* fill collateral from balance pct */
   function fillPct(p) {
-    if (!usdcBal) return
-    setCollateral((usdcBal * p / 100).toFixed(2))
+    if (activeBal == null || activeBal <= 0) return
+    setCollateral((activeBal * p / 100).toFixed(2))
   }
 
   function clampLev(v) { setLeverage(Math.min(v, market.maxLev)) }
 
-  const hasBalance = usdcBal != null && col > 0 && col <= usdcBal
-  const canSubmit  = account && hasBalance && !pending
+  const crossNeedsDeposit = isCross && account && (crossBal == null || crossBal <= 0)
+  const hasBalance = activeBal != null && col > 0 && col <= activeBal
+  const canSubmit  = account && hasBalance && !pending && !crossNeedsDeposit
   const isLong     = side === 'long'
 
   const submitLabel = !account
@@ -152,9 +157,9 @@ export function TradingPanel({ sym, prices, account, isConnecting, onTrade, onCo
         <div className="bal-row">
           <span className="trade-label">Collateral</span>
           <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-            <span className="bal-label">Bal:</span>
+            <span className="bal-label">{isCross ? 'Cross Bal:' : 'Bal:'}</span>
             <span className="bal-value">
-              {usdcBal != null ? usdcBal.toFixed(2) + ' USDC' : account ? '0.00 USDC' : '—'}
+              {activeBal != null ? activeBal.toFixed(2) + ' USDC' : account ? '0.00 USDC' : '—'}
             </span>
           </span>
         </div>
@@ -225,13 +230,26 @@ export function TradingPanel({ sym, prices, account, isConnecting, onTrade, onCo
         </div>
       )}
 
-      {/* ── 1-sig notice ────────────────────────────────────── */}
-      <div className="sig-notice">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--green)" strokeWidth="2" strokeLinecap="round">
-          <polyline points="20 6 9 17 4 12" />
-        </svg>
-        1 signature · No prior approval needed
-      </div>
+      {/* ── 1-sig notice (isolated only) ────────────────────── */}
+      {!isCross && (
+        <div className="sig-notice">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--green)" strokeWidth="2" strokeLinecap="round">
+            <polyline points="20 6 9 17 4 12" />
+          </svg>
+          1 signature · No prior approval needed
+        </div>
+      )}
+
+      {/* ── Cross: deposit prompt ────────────────────────────── */}
+      {crossNeedsDeposit && (
+        <div style={{
+          fontSize: 12, color: 'var(--orange)', textAlign: 'center',
+          padding: '8px 12px', background: 'var(--surface-2)',
+          borderRadius: 'var(--r-sm)', border: '1px solid var(--orange)',
+        }}>
+          Deposit funds into Cross Margin first (Portfolio tab)
+        </div>
+      )}
 
       {/* ── Submit ──────────────────────────────────────────── */}
       <button
@@ -245,10 +263,10 @@ export function TradingPanel({ sym, prices, account, isConnecting, onTrade, onCo
         {submitLabel}
       </button>
 
-      {/* collateral too high warning */}
-      {account && usdcBal != null && col > usdcBal && col > 0 && (
+      {/* balance warning */}
+      {account && activeBal != null && col > activeBal && col > 0 && (
         <div style={{ fontSize: 12, color: 'var(--red)', textAlign: 'center', marginTop: -6 }}>
-          Insufficient USDC balance
+          {isCross ? 'Exceeds cross margin balance' : 'Insufficient USDC balance'}
         </div>
       )}
     </div>

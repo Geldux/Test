@@ -9,12 +9,14 @@ import { fetchVaas } from './usePrices'
 /* ── Permit helper ───────────────────────────────────────────────────── */
 async function signPermit(signer, spender, amount) {
   const usdc = new Contract(ADDRESSES.USDC, ABI_USDC, signer)
-  const [name, nonce] = await Promise.all([
+  /* Fetch name, version, and nonce from chain — never hardcode version */
+  const [name, version, nonce] = await Promise.all([
     usdc.name().catch(() => 'USD Coin'),
+    usdc.version().catch(() => '2'),
     usdc.nonces(getAccount()),
   ])
   const deadline = Math.floor(Date.now() / 1000) + PERMIT_DEADLINE_SECONDS
-  const domain   = { name, version: '2', chainId: CHAIN_ID, verifyingContract: ADDRESSES.USDC }
+  const domain   = { name, version, chainId: CHAIN_ID, verifyingContract: ADDRESSES.USDC }
   const types    = {
     Permit: [
       { name: 'owner',    type: 'address' },
@@ -24,9 +26,12 @@ async function signPermit(signer, spender, amount) {
       { name: 'deadline', type: 'uint256' },
     ],
   }
-  const value = { owner: getAccount(), spender, value: amount, nonce, deadline }
-  const sig   = await signer.signTypedData(domain, types, value)
+  const message = { owner: getAccount(), spender, value: amount, nonce, deadline }
+  console.log('[signPermit] domain:', JSON.stringify({ ...domain, chainId: Number(domain.chainId) }))
+  console.log('[signPermit] spender:', spender, '| amount:', amount.toString(), '| nonce:', nonce.toString(), '| deadline:', deadline)
+  const sig   = await signer.signTypedData(domain, types, message)
   const { v, r, s } = Signature.from(sig)
+  console.log('[signPermit] v:', v, '| r:', r, '| s:', s)
   return { v, r, s, deadline }
 }
 
@@ -34,8 +39,16 @@ async function signPermit(signer, spender, amount) {
 async function getPythData(signer) {
   const pythIds    = MARKETS.map((m) => m.pythId)
   const updateData = await fetchVaas(pythIds)
-  const pyth       = new Contract(ADDRESSES.PYTH, ABI_PYTH, signer)
-  const fee        = await pyth.getUpdateFee(updateData)
+  /* getUpdateFee is a view call that can fail on some Pyth deployments.
+     Fall back to 1 wei — Pyth fee on Base Sepolia testnet is negligible. */
+  let fee = 1n
+  try {
+    const pyth = new Contract(ADDRESSES.PYTH, ABI_PYTH, signer)
+    fee = await pyth.getUpdateFee(updateData)
+    console.log('[getPythData] updateFee:', fee.toString(), '| VAAs:', updateData.length)
+  } catch (e) {
+    console.warn('[getPythData] getUpdateFee failed, using 1 wei fallback:', e?.message)
+  }
   return { updateData, fee }
 }
 
@@ -58,7 +71,12 @@ export function useTrading({ onSuccess, onError } = {}) {
       onSuccess?.(result)
       return result
     } catch (e) {
-      const msg = e?.reason || e?.message || 'Transaction failed'
+      /* Extract clean user-facing message — strip verbose ethers boilerplate */
+      const raw = e?.reason || e?.shortMessage || e?.message || ''
+      const msg = raw
+        ? raw.split(' (action=')[0].split('\n')[0].slice(0, 120)
+        : 'Transaction failed'
+      console.error('[useTrading] error:', raw)
       onError?.(msg)
       throw e
     } finally {
@@ -77,7 +95,8 @@ export function useTrading({ onSuccess, onError } = {}) {
       const collateralRaw = parseUnits(String(Number(collateralUsd).toFixed(18)), 18)
 
       setStep('Signing permit…')
-      const { v, r, s, deadline } = await signPermit(signer, ADDRESSES.PERP_CORE, collateralRaw)
+      /* Spender must be PerpVault — PerpCore routes USDC into vault internally */
+      const { v, r, s, deadline } = await signPermit(signer, ADDRESSES.PERP_VAULT, collateralRaw)
 
       setStep('Fetching oracle price…')
       const { updateData, fee } = await getPythData(signer)
@@ -103,7 +122,8 @@ export function useTrading({ onSuccess, onError } = {}) {
       const collateralRaw = parseUnits(String(Number(collateralUsd).toFixed(18)), 18)
 
       setStep('Signing permit…')
-      const { v, r, s, deadline } = await signPermit(signer, ADDRESSES.PERP_CORE, collateralRaw)
+      /* Spender must be PerpVault — same as open */
+      const { v, r, s, deadline } = await signPermit(signer, ADDRESSES.PERP_VAULT, collateralRaw)
 
       setStep('Fetching oracle price…')
       const { updateData, fee } = await getPythData(signer)

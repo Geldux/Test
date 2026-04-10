@@ -221,6 +221,7 @@ export default function App() {
             sym={sym} prices={prices} account={account}
             isConnecting={isConnecting} onTrade={handleTrade}
             onConnect={connect} pending={pending} step={step}
+            crossAccount={crossAccount}
           />
           <div style={{ padding: '0 14px 14px' }}>
             <OICard sym={sym} oi={oi} />
@@ -437,6 +438,7 @@ export default function App() {
                   sym={sym} prices={prices} account={account}
                   isConnecting={isConnecting} onTrade={handleTrade}
                   onConnect={connect} pending={pending} step={step}
+                  crossAccount={crossAccount}
                 />
               )}
             </div>
