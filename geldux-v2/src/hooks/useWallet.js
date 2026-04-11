@@ -12,12 +12,19 @@ export function getSigner()       { return _signer }
 export function getAccount()      { return _account }
 export function getReadProvider() {
   if (_readProv) return _readProv
-  /* Skip Alchemy if API key is not configured (URL ends in /undefined) */
+  /* Skip Alchemy if API key is not configured (URL ends in /undefined or /null) */
   const urls = RPC_LIST.filter((u) => !u.endsWith('/undefined') && !u.endsWith('/null'))
   const tryList = urls.length ? urls : RPC_LIST
+  console.log('[getReadProvider] ALCHEMY_KEY present:', urls.length > 0 ? urls[0].includes('alchemy') : false,
+    '| candidates:', tryList.map((u) => u.replace(/\/[^/]+$/, '/***')))
   for (const url of tryList) {
-    try { _readProv = new JsonRpcProvider(url); return _readProv } catch (_) {}
+    try {
+      _readProv = new JsonRpcProvider(url)
+      console.log('[getReadProvider] created provider for:', url.replace(/\/[^/]+$/, '/***'))
+      return _readProv
+    } catch (_) {}
   }
+  console.error('[getReadProvider] FAILED — no valid RPC URL found in:', tryList)
   return null
 }
 

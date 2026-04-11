@@ -12,11 +12,13 @@ export function usePositions(account) {
 
   const refresh = useCallback(async () => {
     const addr = account || getAccount()
-    /* Always use the plain JsonRpcProvider for reads — the wallet provider
-       (BrowserProvider/MetaMask) triggers internal eth_blockNumber polling
-       that burns through rate limits. getReadProvider() is a stable singleton. */
-    const rp = getReadProvider()
+    /* Prefer the wallet BrowserProvider for reads (always available when connected).
+       BrowserProvider rate limits are only triggered by eth_blockNumber polling
+       during tx.wait, not by plain eth_call reads. Fall back to JsonRpcProvider. */
+    const rp = getProvider() || getReadProvider()
+    console.log('[usePositions] refresh — account:', addr, '| provider type:', rp?.constructor?.name ?? 'none')
     if (!addr || !rp) {
+      console.warn('[usePositions] skipping refresh — addr:', addr, 'rp:', rp)
       setPositions([]); setOrders([]); setCrossAccount(null)
       return
     }
@@ -31,6 +33,15 @@ export function usePositions(account) {
         orderMgr.traderOrders(addr),
         cross.getAccount(addr),
       ])
+
+      if (posIdsRes.status === 'rejected')
+        console.error('[usePositions] getUserPositions FAILED:', posIdsRes.reason?.message ?? posIdsRes.reason)
+      if (orderIdsRes.status === 'rejected')
+        console.error('[usePositions] traderOrders FAILED:', orderIdsRes.reason?.message ?? orderIdsRes.reason)
+      if (crossAccRes.status === 'rejected')
+        console.error('[usePositions] cross.getAccount FAILED:', crossAccRes.reason?.message ?? crossAccRes.reason)
+      else
+        console.log('[usePositions] cross.getAccount raw:', crossAccRes.value)
 
       /* ── Isolated positions ─────────────────────────────────────────── */
       let posList = []
@@ -92,6 +103,10 @@ export function usePositions(account) {
           cross.accountEquity(addr),
           cross.accountMM(addr),
         ])
+        if (equityRes.status === 'rejected')
+          console.error('[usePositions] accountEquity FAILED:', equityRes.reason?.message ?? equityRes.reason)
+        if (mmRes.status === 'rejected')
+          console.error('[usePositions] accountMM FAILED:', mmRes.reason?.message ?? mmRes.reason)
         crossAcc2 = {
           balance:     Number(balance) / 1e18,
           posIds:      posIds.map((id) => Number(id)),
@@ -101,6 +116,7 @@ export function usePositions(account) {
             ? Math.max(0, Number(equityRes.value) / 1e18 - Number(mmRes.value) / 1e18)
             : 0,
         }
+        console.log('[usePositions] crossAcc2:', crossAcc2)
       }
 
       if (!mountedRef.current) return
@@ -108,7 +124,7 @@ export function usePositions(account) {
       setOrders(orderList)
       setCrossAccount(crossAcc2)
     } catch (e) {
-      console.error('[usePositions] refresh failed:', e?.message || e)
+      console.error('[usePositions] refresh FAILED (top-level catch):', e?.message ?? e, e)
     } finally {
       if (mountedRef.current) setLoading(false)
     }
