@@ -12,8 +12,9 @@ function useUsdcBalance(account) {
     if (!account) { setBal(null); return }
     let cancelled = false
     const load = async () => {
-      /* Prefer wallet provider (already connected) over read provider */
-      const provider = getProvider() || getReadProvider()
+      /* Always use the read provider — the wallet provider triggers eth_blockNumber
+         polling that exhausts RPC rate limits on Alchemy's free tier */
+      const provider = getReadProvider()
       if (!provider) {
         console.warn('[useUsdcBalance] no provider available')
         return
@@ -21,17 +22,13 @@ function useUsdcBalance(account) {
       try {
         const raw = await new Contract(ADDRESSES.USDC, ABI_USDC, provider).balanceOf(account)
         const formatted = parseFloat(formatUnits(raw, 18))
-        console.log('[useUsdcBalance] account:', account,
-          '| USDC addr:', ADDRESSES.USDC,
-          '| raw:', raw.toString(),
-          '| formatted:', formatted)
         if (!cancelled) setBal(formatted)
       } catch (e) {
         console.error('[useUsdcBalance] balanceOf failed:', e?.message || e)
       }
     }
     load()
-    const id = setInterval(load, 10_000)
+    const id = setInterval(load, 30_000)
     return () => { cancelled = true; clearInterval(id) }
   }, [account])
   return bal

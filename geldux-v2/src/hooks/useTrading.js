@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react'
-import { Contract, parseUnits, Signature } from 'ethers'
+import { Contract, parseUnits, Signature, TypedDataEncoder } from 'ethers'
 import { ADDRESSES, ABI_USDC, ABI_PYTH, ABI_PERP_CORE, ABI_ORDER_MANAGER, ABI_CROSS_MARGIN, ABI_FAUCET } from '@/config/contracts'
 import { CHAIN_ID, PERMIT_DEADLINE_SECONDS } from '@/config/chain'
 import { MARKETS } from '@/config/markets'
@@ -8,37 +8,62 @@ import { fetchVaas } from './usePrices'
 
 /* ── Permit helper ───────────────────────────────────────────────────── */
 async function signPermit(signer, spender, amount) {
-  /* Always derive owner from signer — do not rely on module-level cache */
   const owner = await signer.getAddress()
-  const usdc  = new Contract(ADDRESSES.USDC, ABI_USDC, signer)
 
-  /* Fetch name + version from chain; version fallback is '1' (standard default) */
-  const [name, version] = await Promise.all([
-    usdc.name().catch(() => 'USD Coin'),
-    usdc.version().catch(() => '1'),
+  /* Use read provider for all view calls — avoids MetaMask RPC rate limits */
+  const rp       = getReadProvider()
+  const usdcRead = new Contract(ADDRESSES.USDC, ABI_USDC, rp || signer)
+
+  /* Fetch name and on-chain DOMAIN_SEPARATOR in parallel */
+  const [name, onChainSep] = await Promise.all([
+    usdcRead.name().catch(() => 'USD Coin'),
+    usdcRead.DOMAIN_SEPARATOR().catch(() => null),
   ])
 
-  /* Fetch nonce: try signer provider first, fall back to read provider, then 0n.
-     CALL_EXCEPTION with data=null means MetaMask's RPC had an issue — the read
-     provider is a plain JsonRpcProvider that bypasses MetaMask's internal cache. */
+  /* Fetch nonce via read provider; fall back to signer provider, then 0n */
   let nonce = 0n
   try {
-    nonce = await usdc.nonces(owner)
-  } catch (_signerErr) {
+    nonce = await usdcRead.nonces(owner)
+  } catch (_) {
     try {
-      const rp = getReadProvider()
-      if (rp) {
-        const usdcRp = new Contract(ADDRESSES.USDC, ABI_USDC, rp)
-        nonce = await usdcRp.nonces(owner)
-        console.log('[signPermit] nonce via read provider:', nonce.toString())
-      }
-    } catch (_rpErr) {
-      console.warn('[signPermit] nonces() failed on both providers, using 0n')
+      const usdcSigner = new Contract(ADDRESSES.USDC, ABI_USDC, signer)
+      nonce = await usdcSigner.nonces(owner)
+    } catch (__) {
+      console.warn('[signPermit] nonces() failed both providers, using 0n')
+    }
+  }
+
+  /* Auto-detect domain by hashing each candidate and comparing to on-chain value.
+     Candidates in priority order:
+       1. name + version='1' + chainId + verifyingContract  (most custom tokens)
+       2. name + version='2' + chainId + verifyingContract  (Circle USDC)
+       3. name + chainId + verifyingContract                (no-version variant)
+  */
+  const candidates = [
+    { name, version: '1', chainId: CHAIN_ID, verifyingContract: ADDRESSES.USDC },
+    { name, version: '2', chainId: CHAIN_ID, verifyingContract: ADDRESSES.USDC },
+    { name,               chainId: CHAIN_ID, verifyingContract: ADDRESSES.USDC },
+  ]
+  let domain = candidates[0]
+  if (onChainSep) {
+    console.log('[signPermit] on-chain DOMAIN_SEPARATOR:', onChainSep)
+    for (const c of candidates) {
+      try {
+        const computed = TypedDataEncoder.hashDomain(c)
+        console.log('[signPermit] candidate', JSON.stringify({ ...c, chainId: Number(c.chainId) }), '→', computed)
+        if (computed.toLowerCase() === onChainSep.toLowerCase()) {
+          domain = c
+          console.log('[signPermit] DOMAIN MATCHED ✓', JSON.stringify({ ...domain, chainId: Number(domain.chainId) }))
+          break
+        }
+      } catch (_) {}
+    }
+    if (domain === candidates[0]) {
+      console.warn('[signPermit] ⚠ no candidate matched on-chain separator — using version=1 as default')
     }
   }
 
   const deadline = Math.floor(Date.now() / 1000) + PERMIT_DEADLINE_SECONDS
-  const domain   = { name, version, chainId: CHAIN_ID, verifyingContract: ADDRESSES.USDC }
   const types    = {
     Permit: [
       { name: 'owner',    type: 'address' },
@@ -49,11 +74,18 @@ async function signPermit(signer, spender, amount) {
     ],
   }
   const message = { owner, spender, value: amount, nonce, deadline }
-  console.log('[signPermit] domain:', JSON.stringify({ ...domain, chainId: Number(domain.chainId) }))
-  console.log('[signPermit] owner:', owner, '| spender:', spender, '| amount:', amount.toString(), '| nonce:', nonce.toString(), '| deadline:', deadline)
+
+  console.log('[signPermit] ── SIGNING ──')
+  console.log('  domain :', JSON.stringify({ ...domain, chainId: Number(domain.chainId) }))
+  console.log('  owner  :', owner)
+  console.log('  spender:', spender)
+  console.log('  amount :', amount.toString(), '(', Number(amount) / 1e18, 'USDC )')
+  console.log('  nonce  :', nonce.toString())
+  console.log('  deadline:', deadline)
+
   const sig   = await signer.signTypedData(domain, types, message)
   const { v, r, s } = Signature.from(sig)
-  console.log('[signPermit] v:', v, '| r:', r, '| s:', s)
+  console.log('[signPermit] v:', v, '| r:', r.slice(0, 18) + '… | s:', s.slice(0, 18) + '…')
   return { v, r, s, deadline }
 }
 
@@ -136,19 +168,47 @@ export function useTrading({ onSuccess, onError } = {}) {
       const collateralRaw = parseUnits(String(Number(collateralUsd).toFixed(18)), 18)
 
       setStep('Signing permit…')
-      /* Spender must be PerpCore — it is the contract that calls transferFrom */
+      /* Spender = PerpCore: openWithPermitAndPriceUpdate lives on PerpCore,
+         PerpCore is msg.sender when it calls usdc.permit() and usdc.transferFrom() */
       const { v, r, s, deadline } = await signPermit(signer, ADDRESSES.PERP_CORE, collateralRaw)
 
       setStep('Fetching oracle price…')
       const { updateData, fee } = await getPythData(signer)
 
-      setStep(`Submitting ${isLong ? 'Long' : 'Short'}…`)
+      /* ── Full pre-submit log ── */
+      console.log('[openPosition] ── PRE-SUBMIT ──')
+      console.log('  sym        :', sym)
+      console.log('  key        :', market.key)
+      console.log('  isLong     :', isLong)
+      console.log('  leverage   :', leverage, '(type:', typeof leverage, ')')
+      console.log('  collateral :', collateralRaw.toString(), '(', collateralUsd, 'USDC )')
+      console.log('  reduceOnly : false')
+      console.log('  deadline   :', deadline)
+      console.log('  v / r / s  :', v, r.slice(0, 18) + '…', s.slice(0, 18) + '…')
+      console.log('  updateData :', updateData.length, 'VAAs, first 32B:', updateData[0]?.slice(0, 66))
+      console.log('  pythFee    :', fee.toString(), 'wei')
+      console.log('  PerpCore   :', ADDRESSES.PERP_CORE)
+
       const core = new Contract(ADDRESSES.PERP_CORE, ABI_PERP_CORE, signer)
-      const tx   = await core.openWithPermitAndPriceUpdate(
+      const callArgs = [
         market.key, isLong, leverage, collateralRaw, false,
         deadline, v, r, s, updateData,
-        { value: fee }
-      )
+      ]
+
+      /* ── Static simulation — decode exact revert before broadcasting ── */
+      setStep('Simulating…')
+      try {
+        await core.openWithPermitAndPriceUpdate.staticCall(...callArgs, { value: fee })
+        console.log('[openPosition] simulation PASSED ✓')
+      } catch (simErr) {
+        const reason = simErr.reason ?? simErr.shortMessage ?? simErr.message ?? 'unknown revert'
+        console.error('[openPosition] SIMULATION FAILED:', reason, simErr)
+        /* Rethrow with clean message so the error toast is useful */
+        throw new Error(String(reason).split(' (action=')[0].slice(0, 120))
+      }
+
+      setStep(`Submitting ${isLong ? 'Long' : 'Short'}…`)
+      const tx      = await core.openWithPermitAndPriceUpdate(...callArgs, { value: fee })
       setStep('Confirming on Base…')
       const receipt = await waitTx(tx)
       return { hash: tx.hash, receipt }

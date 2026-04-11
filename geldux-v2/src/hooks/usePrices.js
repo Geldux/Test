@@ -34,7 +34,7 @@ async function fetchHermesPrices() {
 }
 
 async function fetchOnChainData() {
-  const rp = getProvider() || getReadProvider()
+  const rp = getReadProvider()
   if (!rp) return
   try {
     const cfg = new Contract(ADDRESSES.PERP_CONFIG, ABI_PERP_CONFIG, rp)
@@ -91,8 +91,8 @@ export function usePrices() {
 
     fetchHermesPrices()
     fetchOnChainData()
-    const hermesInterval = setInterval(fetchHermesPrices,  3000)
-    const chainInterval  = setInterval(fetchOnChainData,   5000)
+    const hermesInterval = setInterval(fetchHermesPrices,  8000)
+    const chainInterval  = setInterval(fetchOnChainData,  15000)
 
     return () => {
       mountedRef.current = false

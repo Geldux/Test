@@ -12,8 +12,10 @@ export function usePositions(account) {
 
   const refresh = useCallback(async () => {
     const addr = account || getAccount()
-    /* Prefer wallet provider (already authenticated) over cold read provider */
-    const rp = getProvider() || getReadProvider()
+    /* Always use the plain JsonRpcProvider for reads — the wallet provider
+       (BrowserProvider/MetaMask) triggers internal eth_blockNumber polling
+       that burns through rate limits. getReadProvider() is a stable singleton. */
+    const rp = getReadProvider()
     if (!addr || !rp) {
       setPositions([]); setOrders([]); setCrossAccount(null)
       return
@@ -115,7 +117,7 @@ export function usePositions(account) {
   useEffect(() => {
     mountedRef.current = true
     refresh()
-    const id = setInterval(refresh, 5000)
+    const id = setInterval(refresh, 20000)
     return () => { mountedRef.current = false; clearInterval(id) }
   }, [refresh])
 
