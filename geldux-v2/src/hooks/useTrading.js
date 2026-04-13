@@ -177,6 +177,7 @@ export function useTrading({ onSuccess, onError } = {}) {
       if (!market) throw new Error('Unknown market')
       const collateralRaw = parseUnits(String(Number(collateralUsd).toFixed(18)), 18)
 
+      const owner = await signer.getAddress()
       setStep('Signing permit…')
       /* Spender = PerpCore: openWithPermitAndPriceUpdate lives on PerpCore,
          PerpCore is msg.sender when it calls usdc.permit() and usdc.transferFrom() */
@@ -209,7 +210,7 @@ export function useTrading({ onSuccess, onError } = {}) {
       /* ── Static simulation — decode exact revert before broadcasting ── */
       setStep('Simulating…')
       try {
-        await core.openWithPermitAndPriceUpdate.staticCall(...callArgs, { value: fee })
+        await core.openWithPermitAndPriceUpdate.staticCall(...callArgs, { value: fee, from: owner })
         console.log('[openPosition] simulation PASSED ✓')
       } catch (simErr) {
         const reason = simErr.reason ?? simErr.shortMessage ?? simErr.message ?? 'unknown revert'
@@ -233,6 +234,7 @@ export function useTrading({ onSuccess, onError } = {}) {
       if (!signer) throw new Error('Wallet not connected')
       const collateralRaw = parseUnits(String(Number(collateralUsd).toFixed(18)), 18)
 
+      const owner = await signer.getAddress()
       setStep('Signing permit…')
       /* Spender must be PerpCore — same as open */
       const { v, r, s, deadline } = await signPermit(signer, ADDRESSES.PERP_CORE, collateralRaw)
@@ -246,7 +248,7 @@ export function useTrading({ onSuccess, onError } = {}) {
       setStep('Simulating…')
       try {
         await core.increaseWithPermitAndPriceUpdate.staticCall(
-          posId, collateralRaw, deadline, v, r, s, updateData, { value: fee }
+          posId, collateralRaw, deadline, v, r, s, updateData, { value: fee, from: owner }
         )
         console.log('[increasePosition] simulation PASSED ✓')
       } catch (simErr) {
@@ -367,15 +369,36 @@ export function useTrading({ onSuccess, onError } = {}) {
     return run('Depositing to cross margin…', async () => {
       const signer = getSigner()
       if (!signer) throw new Error('Wallet not connected')
+      /* Resolve owner address explicitly — used for permit signing,
+         staticCall from override, and diagnostics */
+      const owner  = await signer.getAddress()
       const amtRaw = parseUnits(String(Number(amountUsd).toFixed(18)), 18)
       setStep('Signing permit…')
       const { v, r, s, deadline } = await signPermit(signer, ADDRESSES.CROSS_MARGIN, amtRaw)
       const cross = new Contract(ADDRESSES.CROSS_MARGIN, ABI_CROSS_MARGIN, signer)
 
-      /* Static simulation — catches permit domain mismatch before broadcasting */
+      /* ── Pre-simulation diagnostics ────────────────────────────────
+         signPermit already logs domain/nonce/owner/value details.
+         This block confirms the final assembled args that will be used
+         for both simulation and the real tx — they must be identical. */
+      console.log('[crossDeposit] ── PRE-SIMULATION ──')
+      console.log('  owner    :', owner)
+      console.log('  spender  :', ADDRESSES.CROSS_MARGIN, '(permit spender = contract that calls transferFrom)')
+      console.log('  amtRaw   :', amtRaw.toString(), '(', Number(amtRaw) / 1e18, 'USDC )')
+      console.log('  deadline :', deadline)
+      console.log('  v/r/s    :', v, r.slice(0, 18) + '…', s.slice(0, 18) + '…')
+      console.log('  contract :', ADDRESSES.CROSS_MARGIN)
+      console.log('  fn       : depositWithPermit(uint256 amt, uint256 deadline, uint8 v, bytes32 r, bytes32 s)')
+      console.log('  args     : [amtRaw, deadline, v, r, s] — same for simulation and real tx')
+
+      /* Static simulation — pass { from: owner } so msg.sender inside the
+         contract is the actual user address, not address(0).
+         Without this, the permit check inside depositWithPermit uses
+         msg.sender = address(0) → ecrecover mismatch → "invalid signature"
+         → simulation fails → real tx is never broadcast. */
       setStep('Simulating deposit…')
       try {
-        await cross.depositWithPermit.staticCall(amtRaw, deadline, v, r, s)
+        await cross.depositWithPermit.staticCall(amtRaw, deadline, v, r, s, { from: owner })
         console.log('[crossDeposit] simulation PASSED ✓')
       } catch (simErr) {
         const reason = simErr.reason ?? simErr.shortMessage ?? simErr.message ?? 'unknown revert'
@@ -383,6 +406,8 @@ export function useTrading({ onSuccess, onError } = {}) {
         throw new Error(String(reason).split(' (action=')[0].slice(0, 120))
       }
 
+      console.log('[crossDeposit] ── SUBMITTING ──')
+      console.log('  args: [amtRaw, deadline, v, r, s] (same as simulation — no divergence)')
       setStep('Depositing…')
       const tx      = await cross.depositWithPermit(amtRaw, deadline, v, r, s)
       const receipt = await waitTx(tx)
