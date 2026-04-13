@@ -186,19 +186,21 @@ export function useTrading({ onSuccess, onError } = {}) {
       setStep('Fetching oracle price…')
       const { updateData, fee } = await getPythData(signer)
 
-      /* ── Full pre-submit log ── */
-      console.log('[openPosition] ── PRE-SUBMIT ──')
+      /* ── Pre-simulation diagnostics ── */
+      console.log('[openPosition] ── PRE-SIMULATION ──')
+      console.log('  owner      :', owner)
+      console.log('  spender    :', ADDRESSES.PERP_CORE, '(PerpCore — calls usdc.permit + transferFrom)')
+      console.log('  chainId    :', CHAIN_ID)
       console.log('  sym        :', sym)
       console.log('  key        :', market.key)
       console.log('  isLong     :', isLong)
-      console.log('  leverage   :', leverage, '(type:', typeof leverage, ')')
-      console.log('  collateral :', collateralRaw.toString(), '(', collateralUsd, 'USDC )')
-      console.log('  reduceOnly : false')
+      console.log('  leverage   :', Number(leverage), '(uint8)')
+      console.log('  collateral :', collateralRaw.toString(), '(', collateralUsd, 'USDC ) ← signed value = tx value')
       console.log('  deadline   :', deadline)
       console.log('  v / r / s  :', v, r.slice(0, 18) + '…', s.slice(0, 18) + '…')
       console.log('  updateData :', updateData.length, 'VAAs, first 32B:', updateData[0]?.slice(0, 66))
       console.log('  pythFee    :', fee.toString(), 'wei')
-      console.log('  PerpCore   :', ADDRESSES.PERP_CORE)
+      console.log('  callArgs   : [key, isLong, leverage, collateralRaw, false, deadline, v, r, s, updateData]')
 
       const core = new Contract(ADDRESSES.PERP_CORE, ABI_PERP_CORE, signer)
       /* leverage must be a plain integer — ABI declares uint8 */
@@ -243,6 +245,18 @@ export function useTrading({ onSuccess, onError } = {}) {
       const { updateData, fee } = await getPythData(signer)
 
       const core = new Contract(ADDRESSES.PERP_CORE, ABI_PERP_CORE, signer)
+
+      /* ── Pre-simulation diagnostics ── */
+      console.log('[increasePosition] ── PRE-SIMULATION ──')
+      console.log('  owner      :', owner)
+      console.log('  spender    :', ADDRESSES.PERP_CORE, '(PerpCore — calls usdc.permit + transferFrom)')
+      console.log('  chainId    :', CHAIN_ID)
+      console.log('  posId      :', posId)
+      console.log('  collateral :', collateralRaw.toString(), '(', collateralUsd, 'USDC ) ← signed value = tx value')
+      console.log('  deadline   :', deadline)
+      console.log('  v / r / s  :', v, r.slice(0, 18) + '…', s.slice(0, 18) + '…')
+      console.log('  pythFee    :', fee.toString(), 'wei')
+      console.log('  callArgs   : [posId, collateralRaw, deadline, v, r, s, updateData]')
 
       /* Static simulation — catch permit/position failures before broadcasting */
       setStep('Simulating…')
