@@ -96,7 +96,7 @@ async function signPermit(signer, spender, amount) {
   const sig   = await signer.signTypedData(domain, types, message)
   const { v, r, s } = Signature.from(sig)
   console.log('[signPermit] v:', v, '| r:', r.slice(0, 18) + '… | s:', s.slice(0, 18) + '…')
-  return { v, r, s, deadline }
+  return { v, r, s, deadline, nonce, domain }
 }
 
 /* ── Retry sendTransaction for RPC rate limiting ─────────────────────── */
@@ -173,34 +173,41 @@ export function useTrading({ onSuccess, onError } = {}) {
     return run(`Opening ${isLong ? 'Long' : 'Short'} ${sym}…`, async () => {
       const signer = getSigner()
       if (!signer) throw new Error('Wallet not connected')
-      const market       = MARKETS.find((m) => m.sym === sym)
+      const market        = MARKETS.find((m) => m.sym === sym)
       if (!market) throw new Error('Unknown market')
+      const owner         = await signer.getAddress()
       const collateralRaw = parseUnits(String(Number(collateralUsd).toFixed(18)), 18)
 
-      const owner = await signer.getAddress()
       setStep('Signing permit…')
-      /* Spender = PerpCore: openWithPermitAndPriceUpdate lives on PerpCore,
-         PerpCore is msg.sender when it calls usdc.permit() and usdc.transferFrom() */
-      const { v, r, s, deadline } = await signPermit(signer, ADDRESSES.PERP_CORE, collateralRaw)
+      /* Spender = PerpVault: openWithPermitAndPriceUpdate routes USDC into PerpVault
+         internally — the contract calls USDC.permit(msg.sender, PERP_VAULT, collateral, ...)
+         and USDC.transferFrom(msg.sender, PERP_VAULT, collateral).
+         The permit spender must be whoever calls transferFrom, which is PerpVault. */
+      const { v, r, s, deadline, nonce, domain } = await signPermit(signer, ADDRESSES.PERP_VAULT, collateralRaw)
 
       setStep('Fetching oracle price…')
       const { updateData, fee } = await getPythData(signer)
 
-      /* ── Pre-simulation diagnostics ── */
-      console.log('[openPosition] ── PRE-SIMULATION ──')
-      console.log('  owner      :', owner)
-      console.log('  spender    :', ADDRESSES.PERP_CORE, '(PerpCore — calls usdc.permit + transferFrom)')
-      console.log('  chainId    :', CHAIN_ID)
-      console.log('  sym        :', sym)
-      console.log('  key        :', market.key)
-      console.log('  isLong     :', isLong)
-      console.log('  leverage   :', Number(leverage), '(uint8)')
-      console.log('  collateral :', collateralRaw.toString(), '(', collateralUsd, 'USDC ) ← signed value = tx value')
-      console.log('  deadline   :', deadline)
-      console.log('  v / r / s  :', v, r.slice(0, 18) + '…', s.slice(0, 18) + '…')
-      console.log('  updateData :', updateData.length, 'VAAs, first 32B:', updateData[0]?.slice(0, 66))
-      console.log('  pythFee    :', fee.toString(), 'wei')
-      console.log('  callArgs   : [key, isLong, leverage, collateralRaw, false, deadline, v, r, s, updateData]')
+      /* ── Full pre-submit diagnostics ── */
+      console.log('[openPosition] ── PRE-SUBMIT ──')
+      console.log('  owner             :', owner)
+      console.log('  spender           :', ADDRESSES.PERP_VAULT, '(PERP_VAULT)')
+      console.log('  nonce             :', nonce.toString())
+      console.log('  deadline          :', deadline)
+      console.log('  signed value      :', collateralRaw.toString(), '(', collateralUsd, 'USDC )')
+      console.log('  chainId           :', CHAIN_ID)
+      console.log('  token name        :', domain.name)
+      console.log('  version           :', domain.version ?? '(none)')
+      console.log('  verifyingContract :', domain.verifyingContract)
+      console.log('  tx target         :', ADDRESSES.PERP_CORE, '(PERP_CORE)')
+      console.log('  function          : openWithPermitAndPriceUpdate')
+      console.log('  sym / key         :', sym, market.key)
+      console.log('  isLong            :', isLong)
+      console.log('  leverage          :', Number(leverage))
+      console.log('  reduceOnly        : false')
+      console.log('  v / r / s         :', v, r.slice(0, 18) + '…', s.slice(0, 18) + '…')
+      console.log('  updateData        :', updateData.length, 'VAAs, first 32B:', updateData[0]?.slice(0, 66))
+      console.log('  pythFee           :', fee.toString(), 'wei')
 
       const core = new Contract(ADDRESSES.PERP_CORE, ABI_PERP_CORE, signer)
       /* leverage must be a plain integer — ABI declares uint8 */
@@ -208,6 +215,8 @@ export function useTrading({ onSuccess, onError } = {}) {
         market.key, isLong, Number(leverage), collateralRaw, false,
         deadline, v, r, s, updateData,
       ]
+      console.log('  callArgs   :', market.key, isLong, Number(leverage), collateralRaw.toString(), false, deadline)
+      console.log('  ──────────────────────────────────────────────────────')
 
       /* ── Static simulation — decode exact revert before broadcasting ── */
       setStep('Simulating…')
@@ -234,36 +243,45 @@ export function useTrading({ onSuccess, onError } = {}) {
     return run('Increasing position…', async () => {
       const signer = getSigner()
       if (!signer) throw new Error('Wallet not connected')
+      const owner         = await signer.getAddress()
       const collateralRaw = parseUnits(String(Number(collateralUsd).toFixed(18)), 18)
 
-      const owner = await signer.getAddress()
       setStep('Signing permit…')
-      /* Spender must be PerpCore — same as open */
-      const { v, r, s, deadline } = await signPermit(signer, ADDRESSES.PERP_CORE, collateralRaw)
+      /* Spender = PerpVault: same as openPosition — extra collateral routes into PerpVault */
+      const { v, r, s, deadline, nonce, domain } = await signPermit(signer, ADDRESSES.PERP_VAULT, collateralRaw)
 
       setStep('Fetching oracle price…')
       const { updateData, fee } = await getPythData(signer)
 
       const core = new Contract(ADDRESSES.PERP_CORE, ABI_PERP_CORE, signer)
+      /* Shared args — simulation and submit always use the identical payload */
+      const callArgs = [posId, collateralRaw, deadline, v, r, s, updateData]
 
-      /* ── Pre-simulation diagnostics ── */
-      console.log('[increasePosition] ── PRE-SIMULATION ──')
-      console.log('  owner      :', owner)
-      console.log('  spender    :', ADDRESSES.PERP_CORE, '(PerpCore — calls usdc.permit + transferFrom)')
-      console.log('  chainId    :', CHAIN_ID)
-      console.log('  posId      :', posId)
-      console.log('  collateral :', collateralRaw.toString(), '(', collateralUsd, 'USDC ) ← signed value = tx value')
-      console.log('  deadline   :', deadline)
-      console.log('  v / r / s  :', v, r.slice(0, 18) + '…', s.slice(0, 18) + '…')
-      console.log('  pythFee    :', fee.toString(), 'wei')
-      console.log('  callArgs   : [posId, collateralRaw, deadline, v, r, s, updateData]')
+      /* ── Full pre-submit diagnostics ── */
+      console.log('[increasePosition] ── PRE-SUBMIT ──')
+      console.log('  owner             :', owner)
+      console.log('  spender           :', ADDRESSES.PERP_VAULT, '(PERP_VAULT)')
+      console.log('  nonce             :', nonce.toString())
+      console.log('  deadline          :', deadline)
+      console.log('  signed value      :', collateralRaw.toString(), '(', collateralUsd, 'USDC )')
+      console.log('  chainId           :', CHAIN_ID)
+      console.log('  token name        :', domain.name)
+      console.log('  version           :', domain.version ?? '(none)')
+      console.log('  verifyingContract :', domain.verifyingContract)
+      console.log('  tx target         :', ADDRESSES.PERP_CORE, '(PERP_CORE)')
+      console.log('  function          : increaseWithPermitAndPriceUpdate')
+      console.log('  posId             :', posId.toString())
+      console.log('  collateral        :', collateralRaw.toString(), '(', collateralUsd, 'USDC )')
+      console.log('  v / r / s         :', v, r.slice(0, 18) + '…', s.slice(0, 18) + '…')
+      console.log('  updateData        :', updateData.length, 'VAAs')
+      console.log('  pythFee           :', fee.toString(), 'wei')
+      console.log('  callArgs          :', posId.toString(), collateralRaw.toString(), deadline)
+      console.log('  ──────────────────────────────────────────────────────')
 
-      /* Static simulation — catch permit/position failures before broadcasting */
+      /* ── Static simulation — catch permit/position failures before broadcasting ── */
       setStep('Simulating…')
       try {
-        await core.increaseWithPermitAndPriceUpdate.staticCall(
-          posId, collateralRaw, deadline, v, r, s, updateData, { value: fee, from: owner }
-        )
+        await core.increaseWithPermitAndPriceUpdate.staticCall(...callArgs, { value: fee, from: owner })
         console.log('[increasePosition] simulation PASSED ✓')
       } catch (simErr) {
         const reason = simErr.reason ?? simErr.shortMessage ?? simErr.message ?? 'unknown revert'
@@ -272,10 +290,8 @@ export function useTrading({ onSuccess, onError } = {}) {
       }
 
       setStep('Submitting increase…')
-      /* No leverage param — contract reads it from existing position */
-      const tx   = await core.increaseWithPermitAndPriceUpdate(
-        posId, collateralRaw, deadline, v, r, s, updateData, { value: fee }
-      )
+      /* No leverage param — contract reads it from the existing position struct */
+      const tx      = await core.increaseWithPermitAndPriceUpdate(...callArgs, { value: fee })
       setStep('Confirming on Base…')
       const receipt = await waitTx(tx)
       return { hash: tx.hash, receipt }
