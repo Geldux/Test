@@ -28,8 +28,9 @@ export function useVaultStats() {
           insuranceBalance:   Number(insurance)  / 1e18,
           netPnl:             Number(netPnl)     / 1e18,
         })
-      } catch (_) {}
-      finally { if (alive) setLoading(false) }
+      } catch (e) {
+        console.warn('[useVaultStats] fetch failed:', e?.message ?? e)
+      } finally { if (alive) setLoading(false) }
     }
     fetch()
     const id = setInterval(fetch, 15_000)

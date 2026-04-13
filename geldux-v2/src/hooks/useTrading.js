@@ -6,13 +6,23 @@ import { MARKETS } from '@/config/markets'
 import { getSigner, getAccount, getReadProvider } from './useWallet'
 import { fetchVaas } from './usePrices'
 
+/* Development-only guard — logs a clear error if a critical invariant is violated */
+function devAssert(condition, msg) {
+  if (!condition) console.error('[useTrading] INVARIANT VIOLATION:', msg)
+}
+
 /* ── Permit helper ───────────────────────────────────────────────────── */
 async function signPermit(signer, spender, amount) {
   const owner = await signer.getAddress()
 
-  /* Use read provider for all view calls — avoids MetaMask RPC rate limits */
-  const rp       = getReadProvider()
-  const usdcRead = new Contract(ADDRESSES.USDC, ABI_USDC, rp || signer)
+  /* Use the signer's own underlying provider for USDC view calls.
+     One-off eth_calls via BrowserProvider are reliable and always available
+     when the signer is connected. Rate limiting only occurs from recurring
+     eth_blockNumber polling, not from individual eth_call reads.
+     Fall back to the dedicated read provider if the signer has no provider. */
+  const usdcProv = signer.provider ?? getReadProvider()
+  devAssert(!!usdcProv, 'signPermit: no provider available for USDC reads')
+  const usdcRead = new Contract(ADDRESSES.USDC, ABI_USDC, usdcProv)
 
   /* Fetch name and on-chain DOMAIN_SEPARATOR in parallel */
   const [name, onChainSep] = await Promise.all([
@@ -190,8 +200,9 @@ export function useTrading({ onSuccess, onError } = {}) {
       console.log('  PerpCore   :', ADDRESSES.PERP_CORE)
 
       const core = new Contract(ADDRESSES.PERP_CORE, ABI_PERP_CORE, signer)
+      /* leverage must be a plain integer — ABI declares uint8 */
       const callArgs = [
-        market.key, isLong, leverage, collateralRaw, false,
+        market.key, isLong, Number(leverage), collateralRaw, false,
         deadline, v, r, s, updateData,
       ]
 
@@ -229,8 +240,22 @@ export function useTrading({ onSuccess, onError } = {}) {
       setStep('Fetching oracle price…')
       const { updateData, fee } = await getPythData(signer)
 
-      setStep('Submitting increase…')
       const core = new Contract(ADDRESSES.PERP_CORE, ABI_PERP_CORE, signer)
+
+      /* Static simulation — catch permit/position failures before broadcasting */
+      setStep('Simulating…')
+      try {
+        await core.increaseWithPermitAndPriceUpdate.staticCall(
+          posId, collateralRaw, deadline, v, r, s, updateData, { value: fee }
+        )
+        console.log('[increasePosition] simulation PASSED ✓')
+      } catch (simErr) {
+        const reason = simErr.reason ?? simErr.shortMessage ?? simErr.message ?? 'unknown revert'
+        console.error('[increasePosition] SIMULATION FAILED:', reason, simErr)
+        throw new Error(String(reason).split(' (action=')[0].slice(0, 120))
+      }
+
+      setStep('Submitting increase…')
       /* No leverage param — contract reads it from existing position */
       const tx   = await core.increaseWithPermitAndPriceUpdate(
         posId, collateralRaw, deadline, v, r, s, updateData, { value: fee }
@@ -269,9 +294,12 @@ export function useTrading({ onSuccess, onError } = {}) {
       const tRaw   = parseUnits(String(Number(triggerPrice).toFixed(18)), 18)
       const mgr    = new Contract(ADDRESSES.ORDER_MANAGER, ABI_ORDER_MANAGER, signer)
 
-      /* Need prior USDC approval for limit orders */
+      /* Need prior USDC approval for limit orders.
+         Use signer.getAddress() — not the cached module-level account —
+         to guarantee we check the correct address for the current session. */
+      const ownerAddr = await signer.getAddress()
       const usdc = new Contract(ADDRESSES.USDC, ABI_USDC, signer)
-      const have = await usdc.allowance(getAccount(), ADDRESSES.ORDER_MANAGER)
+      const have = await usdc.allowance(ownerAddr, ADDRESSES.ORDER_MANAGER)
       if (have < cRaw) {
         setStep('Approving USDC…')
         const appTx = await usdc.approve(
@@ -342,8 +370,20 @@ export function useTrading({ onSuccess, onError } = {}) {
       const amtRaw = parseUnits(String(Number(amountUsd).toFixed(18)), 18)
       setStep('Signing permit…')
       const { v, r, s, deadline } = await signPermit(signer, ADDRESSES.CROSS_MARGIN, amtRaw)
+      const cross = new Contract(ADDRESSES.CROSS_MARGIN, ABI_CROSS_MARGIN, signer)
+
+      /* Static simulation — catches permit domain mismatch before broadcasting */
+      setStep('Simulating deposit…')
+      try {
+        await cross.depositWithPermit.staticCall(amtRaw, deadline, v, r, s)
+        console.log('[crossDeposit] simulation PASSED ✓')
+      } catch (simErr) {
+        const reason = simErr.reason ?? simErr.shortMessage ?? simErr.message ?? 'unknown revert'
+        console.error('[crossDeposit] SIMULATION FAILED:', reason, simErr)
+        throw new Error(String(reason).split(' (action=')[0].slice(0, 120))
+      }
+
       setStep('Depositing…')
-      const cross   = new Contract(ADDRESSES.CROSS_MARGIN, ABI_CROSS_MARGIN, signer)
       const tx      = await cross.depositWithPermit(amtRaw, deadline, v, r, s)
       const receipt = await waitTx(tx)
       return { hash: tx.hash, receipt }

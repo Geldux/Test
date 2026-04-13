@@ -12,6 +12,10 @@ export const ASSET_KEYS = {
   SOL: '0x0a3ec4fc70eaf64faf6eeda4e9b2bd4742a785464053aa23afad8bd24650e86f',
 }
 
+/* maxLev values below are frontend display caps only.
+   The actual maximum is enforced by PERP_CONFIG.getAsset(key).maxLeverage on-chain.
+   If these values exceed the contract limit, the tx will revert. Keep in sync with
+   the on-chain config (call validateAndGetAsset to check before setting). */
 export const MARKETS = [
   { sym: 'BTC', name: 'Bitcoin',  maxLev: 50, pythId: PYTH_IDS.BTC, key: ASSET_KEYS.BTC },
   { sym: 'ETH', name: 'Ethereum', maxLev: 50, pythId: PYTH_IDS.ETH, key: ASSET_KEYS.ETH },

@@ -1,0 +1,116 @@
+{
+  "_readme": "Deployment manifest for Geldux testnet frontend. All addresses are Base Sepolia testnet. Not for mainnet use.",
+  "network": "Base Sepolia",
+  "chainId": 84532,
+  "chainHex": "0x14a34",
+  "contracts": {
+    "PERP_CORE": {
+      "address": "0x82a475082618aAbeD4087F3F36DDCeDD1A904c92",
+      "role": "Core perps engine",
+      "entryPoints": [
+        "openWithPermitAndPriceUpdate(bytes32 key, bool isLong, uint8 leverage, uint256 collateral, bool reduceOnly, uint256 deadline, uint8 v, bytes32 r, bytes32 s, bytes[] updateData) payable",
+        "increaseWithPermitAndPriceUpdate(uint256 posId, uint256 extra, uint256 deadline, uint8 v, bytes32 r, bytes32 s, bytes[] updateData) payable",
+        "closeWithPriceUpdate(uint256 posId, bytes[] updateData) payable",
+        "partialCloseWithPriceUpdate(uint256 posId, uint256 collateralDelta, bytes[] updateData) payable"
+      ],
+      "permitSpender": "PERP_CORE is the permit spender for isolated open and increase"
+    },
+    "PERP_CONFIG": {
+      "address": "0x7A5cbCC2e50F40dF5Fc2e723F068857919a08689",
+      "role": "Market config and oracle",
+      "reads": ["getMarkPrice", "computeFundingRate", "getOI", "getAsset", "validateAndGetAsset"]
+    },
+    "PERP_VAULT": {
+      "address": "0x3d47Fb518F9DcE0ea539f340d2aC38a558781F21",
+      "role": "Liquidity vault",
+      "reads": ["freeBalance", "reservedCollateral", "insuranceBalance", "netUnrealizedPnl"]
+    },
+    "PERP_STORE": {
+      "address": "0x84c1bfe158Bc200fd9Fd9d4099Dba79f8A44b007",
+      "role": "Position storage",
+      "reads": ["getUserPositions", "getPosition", "positionExists"]
+    },
+    "PERP_LIQUIDATOR": {
+      "address": "0x5daEcC463f7AeD3CaC7FCd39eEfDfB08A2b0E9D7",
+      "role": "Liquidation engine (not called by frontend)"
+    },
+    "ORDER_MANAGER": {
+      "address": "0xC575622f1D1B3ED658c8c78Ea4fA0133bfBB61d0",
+      "role": "Limit/SL/TP orders",
+      "entryPoints": [
+        "createLimitOrder(bytes32 assetKey, bool isLong, uint8 leverage, uint256 collateral, bool reduceOnly, uint256 triggerPrice) payable",
+        "createStopLoss(uint256 posId, uint256 triggerPrice, uint256 fractionBps) payable",
+        "createTakeProfit(uint256 posId, uint256 triggerPrice, uint256 fractionBps) payable",
+        "cancelOrder(uint256 orderId)"
+      ],
+      "note": "Limit orders require prior USDC approval (not permit-based)"
+    },
+    "CROSS_MARGIN": {
+      "address": "0x96fD349713faA853cc0453a01C89EcA49ec9fA46",
+      "role": "Cross-margin account manager",
+      "entryPoints": [
+        "depositWithPermit(uint256 amt, uint256 deadline, uint8 v, bytes32 r, bytes32 s)",
+        "withdraw(uint256 amt)",
+        "openPosition(bytes32 key, bool isLong, uint8 leverage, uint256 collateral, bool reduceOnly)",
+        "increasePosition(uint256 posId, uint256 extra)",
+        "closePosition(uint256 posId, uint256 fracBps)"
+      ],
+      "permitSpender": "CROSS_MARGIN is the permit spender for cross deposit"
+    },
+    "USDC": {
+      "address": "0x617b90652e30cd88f944decccb69441d8ce64a8c",
+      "role": "Testnet ERC-20 collateral token",
+      "decimals": 18,
+      "warning": "Non-standard: uses 18 decimals, not the 6-decimal standard USDC. All amount math in this repo uses 1e18. Do not change without updating all contract interactions.",
+      "permitSupport": true,
+      "domainSeparatorDetection": "Auto-detected at runtime via TypedDataEncoder.hashDomain against on-chain DOMAIN_SEPARATOR()"
+    },
+    "PYTH": {
+      "address": "0xA2aa501b19aff244D90cc15a4Cf739D2725B5729",
+      "role": "Pyth oracle on Base Sepolia",
+      "reads": ["getUpdateFee", "getPriceUnsafe"],
+      "writes": ["updatePriceFeeds (payable)"]
+    },
+    "FAUCET": {
+      "address": "0x3C2Cd8b05d6e31679ac1C04594583ba4CCD4445f",
+      "role": "Testnet USDC faucet",
+      "reads": ["canClaim", "cooldownRemaining", "faucetBalance"],
+      "writes": ["claim"]
+    }
+  },
+  "markets": {
+    "BTC": {
+      "pythFeedId": "0xe62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43",
+      "assetKey": "0xe98e2830be1a7e4156d656a7505e65d08c67660dc618072422e9c78053c261e9",
+      "maxLeverage_ui": 50,
+      "maxLeverage_note": "Frontend cap — actual limit is PERP_CONFIG.getAsset(key).maxLeverage. Keep in sync."
+    },
+    "ETH": {
+      "pythFeedId": "0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace",
+      "assetKey": "0xaaaebeba3810b1e6b70781f14b2d72c1cb89c0b2b320c43bb67ff79f562f5ff4",
+      "maxLeverage_ui": 50,
+      "maxLeverage_note": "Frontend cap — actual limit is PERP_CONFIG.getAsset(key).maxLeverage. Keep in sync."
+    },
+    "SOL": {
+      "pythFeedId": "0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d",
+      "assetKey": "0x0a3ec4fc70eaf64faf6eeda4e9b2bd4742a785464053aa23afad8bd24650e86f",
+      "maxLeverage_ui": 20,
+      "maxLeverage_note": "Frontend cap — actual limit is PERP_CONFIG.getAsset(key).maxLeverage. Keep in sync."
+    }
+  },
+  "envRequired": {
+    "VITE_ALCHEMY_API_KEY": "Base Sepolia Alchemy RPC key. Without this, falls back to public RPCs (slower, less reliable)."
+  },
+  "envOptional": {
+    "VITE_SUPABASE_URL": "Supabase project URL (leaderboard / notifications — not yet wired)",
+    "VITE_SUPABASE_ANON_KEY": "Supabase anon key (leaderboard / notifications — not yet wired)"
+  },
+  "knownLimitations": [
+    "Spot trading is UI-only (coming soon) — no swap contracts wired",
+    "maxLev in markets.js is not validated against on-chain PERP_CONFIG at runtime",
+    "services/web3/ directory contains an older service layer not currently used by any hook",
+    "Liquidation price shown in UI is an estimate only (uses margin = 0.9/lev approximation)",
+    "Limit orders use unlimited USDC approval rather than exact-amount permit",
+    "Solidity source for deployed contracts is not in this repo — verify via block explorer"
+  ]
+}
