@@ -6,6 +6,7 @@ import { usePositions } from '@/hooks/usePositions'
 import { useTrading }   from '@/hooks/useTrading'
 import { usePoints }    from '@/hooks/usePoints'
 import { useVaultStats } from '@/hooks/useVaultStats'
+import { useHistory }    from '@/hooks/useHistory'
 import { fmtUsdc, fmtUsdcCompact } from '@/utils/format'
 import { MARKETS } from '@/config/markets'
 
@@ -17,8 +18,10 @@ import { TradingPanel }    from '@/components/TradingPanel'
 import { SpotPanel }       from '@/components/SpotPanel'
 import { AccountPanel }    from '@/components/AccountPanel'
 import { DesktopPositionsPanel, MobilePositionsList, MobileOrdersList } from '@/components/PositionsPanel'
-import { MobileNav }       from '@/components/MobileNav'
-import { PointsModal }     from '@/components/PointsModal'
+import { MobileNav }        from '@/components/MobileNav'
+import { PointsModal }      from '@/components/PointsModal'
+import { HistoryPanel }     from '@/components/HistoryPanel'
+import { PortfolioSummary } from '@/components/PortfolioSummary'
 
 /* ── helpers ────────────────────────────────────────────────────── */
 function th(h) { return h ? h.slice(0, 10) + '…' : '' }
@@ -37,6 +40,8 @@ export default function App() {
   const { prices, oi, funding }                            = usePrices()
   const { positions, orders, crossAccount, loading, refresh } = usePositions(account)
   const { stats: vaultStats }                              = useVaultStats()
+  const { entries: histEntries, summary: histSummary,
+          loading: histLoading, reload: histReload }       = useHistory(account)
 
   /* vault summary */
   const vault = vaultStats ? {
@@ -57,10 +62,11 @@ export default function App() {
   const pts = usePoints()
 
   /* ── UI state ─────────────────────────────────────────────────── */
-  const [page,      setPage]      = useState('trade')    // trade | spot | portfolio | rewards
-  const [sym,       setSym]       = useState(MARKETS[0].sym)
-  const [mobileTab, setMobileTab] = useState('trade')    // trade | positions | orders | portfolio
-  const [showPts,   setShowPts]   = useState(false)
+  const [page,         setPage]         = useState('trade')     // trade | spot | portfolio | rewards
+  const [sym,          setSym]          = useState(MARKETS[0].sym)
+  const [mobileTab,    setMobileTab]    = useState('trade')     // trade | positions | orders | portfolio
+  const [portfolioTab, setPortfolioTab] = useState('overview')  // overview | history
+  const [showPts,      setShowPts]      = useState(false)
 
   /* ── trade handler ───────────────────────────────────────────── */
   const handleTrade = useCallback(async ({ type, sym: s, isLong, leverage, collateralUsd, triggerPrice, mode }) => {
@@ -278,47 +284,78 @@ export default function App() {
       )}
 
       {page === 'portfolio' && (
-        <div style={{ marginTop: 'var(--header-h)', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 0, height: 'calc(100vh - var(--header-h))', overflow: 'auto' }}>
-          <div style={{ padding: 24, borderRight: '1px solid var(--border)' }}>
-            <h2 style={{ fontSize: 18, fontWeight: 700, marginBottom: 20 }}>Cross Margin Account</h2>
-            <AccountPanel
-              crossAccount={crossAccount} account={account}
-              onDeposit={handleCrossDeposit} onWithdraw={handleCrossWithdraw}
-              pending={pending}
-            />
+        <div style={{ marginTop: 'var(--header-h)', height: 'calc(100vh - var(--header-h))', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+          {/* Portfolio sub-tab bar */}
+          <div style={{ padding: '0 24px', background: 'var(--surface)', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
+            <div className="tabs">
+              {[['overview', 'Overview'], ['history', 'History']].map(([id, label]) => (
+                <button
+                  key={id}
+                  className={`tab ${portfolioTab === id ? 'active' : ''}`}
+                  onClick={() => setPortfolioTab(id)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
           </div>
-          <div style={{ padding: 24 }}>
-            <h2 style={{ fontSize: 18, fontWeight: 700, marginBottom: 20 }}>Vault</h2>
-            {vault && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                {[
-                  ['TVL',         vault.tvlFmt],
-                  ['Utilization', vault.utilFmt],
-                  ['APY (est.)',  '—'],
-                ].map(([k, v]) => (
-                  <div key={k} style={{
-                    display: 'flex', justifyContent: 'space-between',
-                    padding: '12px 16px', background: 'var(--surface)',
-                    border: '1px solid var(--border)', borderRadius: 'var(--r)',
-                  }}>
-                    <span style={{ color: 'var(--text-3)' }}>{k}</span>
-                    <span className="mono" style={{ fontWeight: 700 }}>{v}</span>
+
+          <div style={{ flex: 1, overflow: 'auto' }}>
+            {portfolioTab === 'overview' && (
+              <div style={{ padding: 24 }}>
+                <PortfolioSummary
+                  positions={positions} prices={prices}
+                  summary={histSummary} historyLoading={histLoading}
+                />
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24 }}>
+                  <div>
+                    <h2 style={{ fontSize: 16, fontWeight: 700, marginBottom: 16 }}>Cross Margin Account</h2>
+                    <AccountPanel
+                      crossAccount={crossAccount} account={account}
+                      onDeposit={handleCrossDeposit} onWithdraw={handleCrossWithdraw}
+                      pending={pending}
+                    />
                   </div>
-                ))}
+                  <div>
+                    <h2 style={{ fontSize: 16, fontWeight: 700, marginBottom: 16 }}>Vault</h2>
+                    {vault && (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 24 }}>
+                        {[['TVL', vault.tvlFmt], ['Utilization', vault.utilFmt]].map(([k, v]) => (
+                          <div key={k} style={{
+                            display: 'flex', justifyContent: 'space-between',
+                            padding: '12px 16px', background: 'var(--surface)',
+                            border: '1px solid var(--border)', borderRadius: 'var(--r)',
+                          }}>
+                            <span style={{ color: 'var(--text-3)' }}>{k}</span>
+                            <span className="mono" style={{ fontWeight: 700 }}>{v}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <h2 style={{ fontSize: 16, fontWeight: 700, marginBottom: 12 }}>Testnet Tools</h2>
+                    <button
+                      className="btn btn-outline btn-lg btn-block"
+                      onClick={handleFaucet}
+                      disabled={pending || !account}
+                    >
+                      {pending ? <><span className="spinner" /> Claiming…</> : 'Claim Testnet USDC'}
+                    </button>
+                    {!account && (
+                      <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 8, textAlign: 'center' }}>
+                        Connect wallet to claim
+                      </div>
+                    )}
+                  </div>
+                </div>
               </div>
             )}
 
-            <h2 style={{ fontSize: 18, fontWeight: 700, margin: '28px 0 16px' }}>Testnet Tools</h2>
-            <button
-              className="btn btn-outline btn-lg btn-block"
-              onClick={handleFaucet}
-              disabled={pending || !account}
-            >
-              {pending ? <><span className="spinner" /> Claiming…</> : 'Claim Testnet USDC'}
-            </button>
-            {!account && (
-              <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 8, textAlign: 'center' }}>
-                Connect wallet to claim
+            {portfolioTab === 'history' && (
+              <div style={{ padding: '0 24px 24px', height: '100%' }}>
+                <HistoryPanel
+                  entries={histEntries} loading={histLoading}
+                  account={account} reload={histReload}
+                />
               </div>
             )}
           </div>
@@ -464,62 +501,96 @@ export default function App() {
 
         {/* ── Portfolio tab ── */}
         {mobileTab === 'portfolio' && (
-          <div style={{ padding: '12px' }}>
-            {/* Points */}
-            <div className="card card-p" style={{ marginBottom: 12 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-                <span style={{ fontWeight: 700, fontSize: 15 }}>GDX Points</span>
-                <button className="btn btn-sm btn-ghost" onClick={() => setShowPts(true)}>Details</button>
-              </div>
-              <div className="mono" style={{ fontSize: 30, fontWeight: 800, color: 'var(--green)', marginBottom: 4 }}>
-                {(pts.pts || 0).toLocaleString()}
-              </div>
-              <div style={{ fontSize: 12, color: 'var(--text-3)' }}>
-                Level: <strong style={{ color: 'var(--text-2)' }}>{pts.level?.name}</strong>
-              </div>
-              <div style={{ marginTop: 10, height: 4, background: 'var(--surface-3)', borderRadius: 99 }}>
-                <div style={{ height: '100%', width: `${pts.pct}%`, background: 'var(--green)', borderRadius: 99 }} />
+          <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+            {/* Sub-tab bar */}
+            <div style={{ padding: '0 12px', background: 'var(--surface)', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
+              <div className="tabs">
+                {[['overview', 'Overview'], ['history', 'History']].map(([id, label]) => (
+                  <button
+                    key={id}
+                    className={`tab ${portfolioTab === id ? 'active' : ''}`}
+                    onClick={() => setPortfolioTab(id)}
+                  >
+                    {label}
+                  </button>
+                ))}
               </div>
             </div>
 
-            {/* Cross margin */}
-            {account && (
-              <div className="card" style={{ marginBottom: 12 }}>
-                <div style={{ padding: '14px 16px 0', fontWeight: 700, fontSize: 15 }}>Cross Margin</div>
-                <AccountPanel
-                  crossAccount={crossAccount} account={account}
-                  onDeposit={handleCrossDeposit} onWithdraw={handleCrossWithdraw}
-                  pending={pending}
+            {portfolioTab === 'overview' && (
+              <div style={{ padding: '12px', overflowY: 'auto' }}>
+                {/* Points */}
+                <div className="card card-p" style={{ marginBottom: 12 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                    <span style={{ fontWeight: 700, fontSize: 15 }}>GDX Points</span>
+                    <button className="btn btn-sm btn-ghost" onClick={() => setShowPts(true)}>Details</button>
+                  </div>
+                  <div className="mono" style={{ fontSize: 30, fontWeight: 800, color: 'var(--green)', marginBottom: 4 }}>
+                    {(pts.pts || 0).toLocaleString()}
+                  </div>
+                  <div style={{ fontSize: 12, color: 'var(--text-3)' }}>
+                    Level: <strong style={{ color: 'var(--text-2)' }}>{pts.level?.name}</strong>
+                  </div>
+                  <div style={{ marginTop: 10, height: 4, background: 'var(--surface-3)', borderRadius: 99 }}>
+                    <div style={{ height: '100%', width: `${pts.pct}%`, background: 'var(--green)', borderRadius: 99 }} />
+                  </div>
+                </div>
+
+                {/* Portfolio summary */}
+                <PortfolioSummary
+                  positions={positions} prices={prices}
+                  summary={histSummary} historyLoading={histLoading}
+                />
+
+                {/* Cross margin */}
+                {account && (
+                  <div className="card" style={{ marginBottom: 12 }}>
+                    <div style={{ padding: '14px 16px 0', fontWeight: 700, fontSize: 15 }}>Cross Margin</div>
+                    <AccountPanel
+                      crossAccount={crossAccount} account={account}
+                      onDeposit={handleCrossDeposit} onWithdraw={handleCrossWithdraw}
+                      pending={pending}
+                    />
+                  </div>
+                )}
+
+                {/* Vault */}
+                {vault && (
+                  <div className="card card-p" style={{ marginBottom: 12 }}>
+                    <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 12 }}>Vault</div>
+                    {[['TVL', vault.tvlFmt], ['Utilization', vault.utilFmt]].map(([k, v]) => (
+                      <div key={k} style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+                        <span style={{ color: 'var(--text-3)', fontSize: 13 }}>{k}</span>
+                        <span className="mono" style={{ fontSize: 13, fontWeight: 700 }}>{v}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Faucet */}
+                {account ? (
+                  <button
+                    className="btn btn-outline btn-lg btn-block"
+                    onClick={handleFaucet}
+                    disabled={pending}
+                  >
+                    {pending ? <><span className="spinner" /> Claiming…</> : 'Claim Testnet USDC'}
+                  </button>
+                ) : (
+                  <button className="btn btn-primary btn-lg btn-block" onClick={connect} disabled={isConnecting}>
+                    {isConnecting ? 'Connecting…' : 'Connect Wallet'}
+                  </button>
+                )}
+              </div>
+            )}
+
+            {portfolioTab === 'history' && (
+              <div style={{ flex: 1, padding: '0 12px 12px', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+                <HistoryPanel
+                  entries={histEntries} loading={histLoading}
+                  account={account} reload={histReload}
                 />
               </div>
-            )}
-
-            {/* Vault */}
-            {vault && (
-              <div className="card card-p" style={{ marginBottom: 12 }}>
-                <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 12 }}>Vault</div>
-                {[['TVL', vault.tvlFmt], ['Utilization', vault.utilFmt]].map(([k, v]) => (
-                  <div key={k} style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
-                    <span style={{ color: 'var(--text-3)', fontSize: 13 }}>{k}</span>
-                    <span className="mono" style={{ fontSize: 13, fontWeight: 700 }}>{v}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {/* Faucet */}
-            {account ? (
-              <button
-                className="btn btn-outline btn-lg btn-block"
-                onClick={handleFaucet}
-                disabled={pending}
-              >
-                {pending ? <><span className="spinner" /> Claiming…</> : 'Claim Testnet USDC'}
-              </button>
-            ) : (
-              <button className="btn btn-primary btn-lg btn-block" onClick={connect} disabled={isConnecting}>
-                {isConnecting ? 'Connecting…' : 'Connect Wallet'}
-              </button>
             )}
           </div>
         )}
