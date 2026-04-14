@@ -151,7 +151,7 @@ export function HistoryPanel({ entries, loading, account, reload }) {
   const visible = entries.filter((e) => matchesFilter(e.type, filter))
 
   return (
-    <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+    <div>
       {/* Filter tabs + reload */}
       <div style={{
         display: 'flex', justifyContent: 'space-between', alignItems: 'center',
@@ -186,7 +186,7 @@ export function HistoryPanel({ entries, loading, account, reload }) {
       </div>
 
       {/* Entry list */}
-      <div style={{ flex: 1, overflowY: 'auto', paddingTop: 0 }}>
+      <div>
         {(!account || (!loading && entries.length === 0)) ? (
           <EmptyState connected={!!account} loading={loading} />
         ) : loading && entries.length === 0 ? (

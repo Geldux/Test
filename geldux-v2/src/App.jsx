@@ -351,7 +351,7 @@ export default function App() {
             )}
 
             {portfolioTab === 'history' && (
-              <div style={{ padding: '0 24px 24px', height: '100%' }}>
+              <div style={{ padding: '0 24px 24px' }}>
                 <HistoryPanel
                   entries={histEntries} loading={histLoading}
                   account={account} reload={histReload}
@@ -501,9 +501,13 @@ export default function App() {
 
         {/* ── Portfolio tab ── */}
         {mobileTab === 'portfolio' && (
-          <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-            {/* Sub-tab bar */}
-            <div style={{ padding: '0 12px', background: 'var(--surface)', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
+          <div>
+            {/* Sub-tab bar — sticky so it stays visible when scrolling Overview */}
+            <div style={{
+              position: 'sticky', top: 0, zIndex: 10,
+              padding: '0 12px', background: 'var(--surface)',
+              borderBottom: '1px solid var(--border)',
+            }}>
               <div className="tabs">
                 {[['overview', 'Overview'], ['history', 'History']].map(([id, label]) => (
                   <button
@@ -518,7 +522,7 @@ export default function App() {
             </div>
 
             {portfolioTab === 'overview' && (
-              <div style={{ padding: '12px', overflowY: 'auto' }}>
+              <div style={{ padding: '12px' }}>
                 {/* Points */}
                 <div className="card card-p" style={{ marginBottom: 12 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
@@ -585,7 +589,7 @@ export default function App() {
             )}
 
             {portfolioTab === 'history' && (
-              <div style={{ flex: 1, padding: '0 12px 12px', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+              <div style={{ padding: '0 12px 12px' }}>
                 <HistoryPanel
                   entries={histEntries} loading={histLoading}
                   account={account} reload={histReload}
