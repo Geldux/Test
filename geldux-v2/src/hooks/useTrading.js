@@ -332,6 +332,16 @@ export function useTrading({ onSuccess, onError } = {}) {
       const ownerAddr = await signer.getAddress()
       const usdc = new Contract(ADDRESSES.USDC, ABI_USDC, signer)
       const have = await usdc.allowance(ownerAddr, ADDRESSES.ORDER_MANAGER)
+
+      console.log('[createLimitOrder] ── PRE-SUBMIT ──')
+      console.log('  owner      :', ownerAddr)
+      console.log('  spender    :', ADDRESSES.ORDER_MANAGER, '(ORDER_MANAGER)')
+      console.log('  cRaw       :', cRaw.toString(), '(', collateralUsd, 'USDC )')
+      console.log('  allowance  :', have.toString(), have >= cRaw ? '✓ sufficient' : '✗ need approval')
+      console.log('  market key :', market.key, '|', sym)
+      console.log('  isLong     :', isLong, '| leverage:', leverage)
+      console.log('  triggerRaw :', tRaw.toString(), '(', triggerPrice, ')')
+
       if (have < cRaw) {
         setStep('Approving USDC…')
         const appTx = await usdc.approve(
@@ -343,6 +353,8 @@ export function useTrading({ onSuccess, onError } = {}) {
 
       setStep('Fetching execution fee…')
       const minFee = await mgr.minExecFee()
+      console.log('[createLimitOrder]  execFee    :', minFee.toString(), 'wei')
+      console.log('[createLimitOrder]  callArgs   :', market.key, isLong, leverage, cRaw.toString(), false, tRaw.toString())
 
       setStep('Creating order…')
       const tx = await mgr.createLimitOrder(
