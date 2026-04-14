@@ -15,16 +15,13 @@ function useUsdcBalance(account) {
       /* Prefer the wallet BrowserProvider (reliable when connected).
          eth_blockNumber rate limiting only occurs during tx.wait, not plain reads. */
       const provider = getProvider() || getReadProvider()
-      console.log('[useUsdcBalance] account:', account, '| provider type:', provider?.constructor?.name ?? 'none')
       if (!provider) {
         console.error('[useUsdcBalance] no provider available — USDC balance cannot be read')
         return
       }
       try {
         const raw = await new Contract(ADDRESSES.USDC, ABI_USDC, provider).balanceOf(account)
-        const formatted = parseFloat(formatUnits(raw, 18))
-        console.log('[useUsdcBalance] raw:', raw?.toString(), '| formatted:', formatted)
-        if (!cancelled) setBal(formatted)
+        if (!cancelled) setBal(parseFloat(formatUnits(raw, 18)))
       } catch (e) {
         console.error('[useUsdcBalance] balanceOf FAILED:', e?.message ?? e, e)
       }
@@ -158,7 +155,7 @@ export function TradingPanel({ sym, prices, account, isConnecting, onTrade, onCo
           <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
             <span className="bal-label">{isCross ? 'Cross Bal:' : 'Bal:'}</span>
             <span className="bal-value">
-              {activeBal != null ? activeBal.toFixed(2) + ' USDC' : account ? '0.00 USDC' : '—'}
+              {activeBal != null ? activeBal.toFixed(2) + ' USDC' : '—'}
             </span>
           </span>
         </div>

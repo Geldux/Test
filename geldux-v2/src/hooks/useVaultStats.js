@@ -15,19 +15,21 @@ export function useVaultStats() {
       setLoading(true)
       try {
         const vault = new Contract(ADDRESSES.PERP_VAULT, ABI_PERP_VAULT, rp)
-        const [free, reserved, insurance, netPnl] = await Promise.all([
+        const [freeRes, reservedRes] = await Promise.allSettled([
           vault.freeBalance(),
           vault.reservedCollateral(),
-          vault.insuranceBalance(),
-          vault.netUnrealizedPnl(),
         ])
+        if (freeRes.status === 'rejected')
+          console.warn('[useVaultStats] freeBalance failed:', freeRes.reason?.message ?? freeRes.reason)
+        if (reservedRes.status === 'rejected')
+          console.warn('[useVaultStats] reservedCollateral failed:', reservedRes.reason?.message ?? reservedRes.reason)
         if (!alive) return
-        setStats({
-          freeBalance:        Number(free)      / 1e18,
-          reservedCollateral: Number(reserved)  / 1e18,
-          insuranceBalance:   Number(insurance)  / 1e18,
-          netPnl:             Number(netPnl)     / 1e18,
-        })
+        if (freeRes.status === 'fulfilled' && reservedRes.status === 'fulfilled') {
+          setStats({
+            freeBalance:        Number(freeRes.value)     / 1e18,
+            reservedCollateral: Number(reservedRes.value) / 1e18,
+          })
+        }
       } catch (e) {
         console.warn('[useVaultStats] fetch failed:', e?.message ?? e)
       } finally { if (alive) setLoading(false) }

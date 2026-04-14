@@ -8,12 +8,13 @@ export function DesktopMarketBar({ prices, oi, funding, selected, onSelect }) {
       <div className="d-sidebar-title">Markets</div>
       {MARKETS.map((m) => {
         const p     = prices[m.sym]?.price || prices[m.sym]?.mark
-        const long  = oi[m.sym]?.longOI  || 0
-        const short = oi[m.sym]?.shortOI || 0
-        const total = long + short || 1
-        const lPct  = Math.round(long  / total * 100)
-        const sPct  = 100 - lPct
-        const fr    = funding[m.sym] || 0
+        const long  = oi[m.sym]?.longOI  ?? null
+        const short = oi[m.sym]?.shortOI ?? null
+        const hasOI = long != null && short != null
+        const total = hasOI ? (long + short || 1) : 1
+        const lPct  = hasOI ? Math.round(long  / total * 100) : 50
+        const sPct  = hasOI ? 100 - lPct : 50
+        const fr    = funding[m.sym] ?? null
 
         return (
           <div
@@ -26,8 +27,8 @@ export function DesktopMarketBar({ prices, oi, funding, selected, onSelect }) {
               <span className="market-price mono">{fmtPriceRaw(p)}</span>
             </div>
             <div className="market-item-row2">
-              <span className={`market-funding ${fr >= 0 ? 'pos' : 'neg'}`}>{fmtFunding(fr)}</span>
-              <span style={{ fontSize: 11, color: 'var(--text-3)' }}>{fmtOI(long + short)}</span>
+              <span className={`market-funding ${fr == null ? '' : fr >= 0 ? 'pos' : 'neg'}`}>{fmtFunding(fr)}</span>
+              <span style={{ fontSize: 11, color: 'var(--text-3)' }}>{hasOI ? fmtOI(long + short) : '—'}</span>
             </div>
             <div className="market-oi-bar-wrap">
               <div className="market-oi-label">

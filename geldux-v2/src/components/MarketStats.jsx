@@ -3,18 +3,19 @@ import { fmtPriceRaw, fmtOI, fmtFunding } from '@/utils/format'
 /* ── Desktop price hero + stats strip ──────────────────────────── */
 export function DesktopMarketStats({ sym, prices, oi, funding }) {
   const p     = prices[sym]?.price || prices[sym]?.mark
-  const long  = oi[sym]?.longOI  || 0
-  const short = oi[sym]?.shortOI || 0
-  const total = long + short || 1
-  const lPct  = Math.round(long / total * 100)
-  const fr    = funding[sym] || 0
+  const long  = oi[sym]?.longOI  ?? null
+  const short = oi[sym]?.shortOI ?? null
+  const hasOI = long != null && short != null
+  const total = hasOI ? (long + short || 1) : 1
+  const lPct  = hasOI ? Math.round(long / total * 100) : 50
+  const fr    = funding[sym] ?? null
 
   const stats = [
-    { label: 'Long OI',    value: fmtOI(long),        cls: 'pos' },
-    { label: 'Short OI',   value: fmtOI(short),       cls: 'neg' },
-    { label: 'Funding/hr', value: fmtFunding(fr),     cls: fr >= 0 ? 'pos' : 'neg' },
-    { label: 'Mark Price', value: fmtPriceRaw(p),     cls: '' },
-    { label: 'L/S Ratio',  value: `${lPct}% / ${100 - lPct}%`, cls: '' },
+    { label: 'Long OI',    value: hasOI ? fmtOI(long)  : '—',  cls: 'pos' },
+    { label: 'Short OI',   value: hasOI ? fmtOI(short) : '—',  cls: 'neg' },
+    { label: 'Funding/hr', value: fmtFunding(fr),               cls: fr == null ? '' : fr >= 0 ? 'pos' : 'neg' },
+    { label: 'Mark Price', value: fmtPriceRaw(p),               cls: '' },
+    { label: 'L/S Ratio',  value: hasOI ? `${lPct}% / ${100 - lPct}%` : '—', cls: '' },
   ]
 
   return (
@@ -37,11 +38,12 @@ export function DesktopMarketStats({ sym, prices, oi, funding }) {
 
 /* ── Desktop OI imbalance card ──────────────────────────────────── */
 export function OICard({ sym, oi }) {
-  const long  = oi[sym]?.longOI  || 0
-  const short = oi[sym]?.shortOI || 0
-  const total = long + short || 1
-  const lPct  = Math.round(long / total * 100)
-  const sPct  = 100 - lPct
+  const long  = oi[sym]?.longOI  ?? null
+  const short = oi[sym]?.shortOI ?? null
+  const hasOI = long != null && short != null
+  const total = hasOI ? (long + short || 1) : 1
+  const lPct  = hasOI ? Math.round(long / total * 100) : 50
+  const sPct  = hasOI ? 100 - lPct : 50
 
   return (
     <div className="oi-card card desktop-only" style={{ marginTop: 12 }}>
@@ -50,7 +52,7 @@ export function OICard({ sym, oi }) {
           Open Interest
         </span>
         <span className="mono" style={{ fontSize: 12, color: 'var(--text-3)' }}>
-          {fmtOI(long + short)}
+          {hasOI ? fmtOI(long + short) : '—'}
         </span>
       </div>
       <div className="oi-bar" style={{ height: 5 }}>
@@ -58,8 +60,12 @@ export function OICard({ sym, oi }) {
         <div className="oi-bar-short" style={{ width: `${sPct}%` }} />
       </div>
       <div className="oi-card-labels">
-        <span className="pos" style={{ fontSize: 11, fontWeight: 700 }}>▲ Long {lPct}% · {fmtOI(long)}</span>
-        <span className="neg" style={{ fontSize: 11, fontWeight: 700 }}>{fmtOI(short)} · {sPct}% ▼</span>
+        <span className="pos" style={{ fontSize: 11, fontWeight: 700 }}>
+          {hasOI ? `▲ Long ${lPct}% · ${fmtOI(long)}` : '▲ Long —'}
+        </span>
+        <span className="neg" style={{ fontSize: 11, fontWeight: 700 }}>
+          {hasOI ? `${fmtOI(short)} · ${sPct}% ▼` : '— ▼'}
+        </span>
       </div>
     </div>
   )
@@ -67,10 +73,11 @@ export function OICard({ sym, oi }) {
 
 /* ── Mobile market stats ────────────────────────────────────────── */
 export function MobileMarketStats({ sym, prices, oi, funding }) {
-  const p    = prices[sym]?.price || prices[sym]?.mark
-  const long = oi[sym]?.longOI  || 0
-  const short = oi[sym]?.shortOI || 0
-  const fr   = funding[sym] || 0
+  const p     = prices[sym]?.price || prices[sym]?.mark
+  const long  = oi[sym]?.longOI  ?? null
+  const short = oi[sym]?.shortOI ?? null
+  const hasOI = long != null && short != null
+  const fr    = funding[sym] ?? null
 
   return (
     <div className="m-market-stats mobile-only">
@@ -80,9 +87,9 @@ export function MobileMarketStats({ sym, prices, oi, funding }) {
       <div className="m-price-hero mono">{fmtPriceRaw(p)}</div>
       <div className="m-stats-row">
         {[
-          { label: 'Long OI',    value: fmtOI(long),    cls: 'pos' },
-          { label: 'Short OI',   value: fmtOI(short),   cls: 'neg' },
-          { label: 'Funding/hr', value: fmtFunding(fr), cls: fr >= 0 ? 'pos' : 'neg' },
+          { label: 'Long OI',    value: hasOI ? fmtOI(long)  : '—', cls: 'pos' },
+          { label: 'Short OI',   value: hasOI ? fmtOI(short) : '—', cls: 'neg' },
+          { label: 'Funding/hr', value: fmtFunding(fr), cls: fr == null ? '' : fr >= 0 ? 'pos' : 'neg' },
         ].map((s) => (
           <div key={s.label} className="m-stat-item">
             <div className="stat-label">{s.label}</div>
