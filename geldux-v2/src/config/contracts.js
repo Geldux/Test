@@ -10,6 +10,7 @@ export const ADDRESSES = {
   USDC:            '0x617b90652e30cd88f944decccb69441d8ce64a8c',
   PYTH:            '0xA2aa501b19aff244D90cc15a4Cf739D2725B5729',
   FAUCET:          '0x3C2Cd8b05d6e31679ac1C04594583ba4CCD4445f',
+  SPOT_DEX:        '0x446B688953Ffdb22D035BB6689745ef7aEa40fa8',
 }
 
 /* ── ERC-20 + EIP-2612 Permit ABI ──────────────────────────────────────── */
@@ -149,4 +150,20 @@ export const ABI_FAUCET = [
   'function faucetBalance() view returns (uint256)',
   'function claimAmount() view returns (uint256)',
   'function cooldownPeriod() view returns (uint256)',
+]
+
+/* ── SpotDex ABI ───────────────────────────────────────────────────────── */
+export const ABI_SPOT_DEX = [
+  /* Market queries — IDs are bytes32 */
+  'function getAllMarkets() view returns (bytes32[])',
+  'function getMarket(bytes32 id) view returns (address token, bytes32 priceKey, string symbol, uint256 tokenReserve, bool active, uint256 price)',
+  /* Quote returns output amount, fee taken, and oracle price used */
+  'function quote(bytes32 id, bool buying, uint256 amountIn) view returns (uint256 amountOut, uint256 fee, uint256 priceUSD)',
+  /* Execute — buy: USDC approval required; sell: token approval required */
+  'function buy(bytes32 id, uint256 usdcIn, uint256 minOut) external returns (uint256 tokenOut)',
+  'function sell(bytes32 id, uint256 tokenIn, uint256 minUsdc) external returns (uint256 usdcOut)',
+  /* Events */
+  'event Bought(address indexed user, bytes32 indexed id, uint256 usdcIn, uint256 tokenOut, uint256 fee)',
+  'event Sold(address indexed user, bytes32 indexed id, uint256 tokenIn, uint256 usdcOut, uint256 fee)',
+  'event MarketAdded(bytes32 indexed id, address indexed token, bytes32 indexed priceKey, string symbol)',
 ]

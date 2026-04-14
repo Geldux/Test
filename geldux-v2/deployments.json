@@ -76,6 +76,13 @@
       "role": "Testnet USDC faucet",
       "reads": ["canClaim", "cooldownRemaining", "faucetBalance"],
       "writes": ["claim"]
+    },
+    "SPOT_DEX": {
+      "address": "0x446B688953Ffdb22D035BB6689745ef7aEa40fa8",
+      "role": "Spot DEX — AMM-style token/USDC markets",
+      "reads": ["getAllMarkets", "getMarket", "quote"],
+      "writes": ["buy (requires USDC approval)", "sell (requires token approval)"],
+      "note": "Market IDs are bytes32. quote() returns (amountOut, fee, priceUSD). tokenReserve is the token-side reserve, not USDC."
     }
   },
   "markets": {
