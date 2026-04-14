@@ -99,6 +99,12 @@ export const ABI_ORDER_MANAGER = [
   'function createStopLoss(uint256 posId, uint256 triggerPrice, uint256 fractionBps) external payable returns (uint256)',
   'function createTakeProfit(uint256 posId, uint256 triggerPrice, uint256 fractionBps) external payable returns (uint256)',
   'function cancelOrder(uint256 orderId)',
+  /* Execute a triggered order — callable by anyone (keeper pattern).
+     Caller receives the order's executionFee as reward.
+     Requires fresh Pyth price update data + ETH to cover the Pyth fee.
+     Verify exact signature against the deployed contract on the block explorer
+     if the call reverts with BAD_DATA or CALL_EXCEPTION. */
+  'function executeOrder(uint256 orderId, bytes[] calldata updateData) external payable',
   /* Queries */
   'function getOrder(uint256 id) view returns (tuple(uint256 id, address trader, bytes32 assetKey, uint8 orderType, bool isLong, uint8 leverage, uint256 collateral, bool reduceOnly, uint256 posId, uint256 fractionBps, uint256 triggerPrice, bool triggerAbove, bool active, uint256 createdAt, uint256 executionFee))',
   'function traderOrders(address t) view returns (uint256[])',

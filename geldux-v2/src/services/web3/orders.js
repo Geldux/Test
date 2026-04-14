@@ -5,12 +5,14 @@
  * createStopLoss()     attach a stop-loss to an existing position
  * createTakeProfit()   attach a take-profit to an existing position
  * cancelOrder()        cancel an active order and reclaim execution fee
+ * executeOrder()       execute a triggered order (keeper pattern — caller earns executionFee)
  * fetchOrders()        read all active orders for an address
  */
 import { Contract, parseUnits } from 'ethers'
 import { ADDRESSES, ABI_ORDER_MANAGER, ABI_USDC } from '@/config/contracts'
 import { MARKETS } from '@/config/markets'
 import { getSigner, getReadProvider } from './wallet'
+import { getPythUpdateArgs } from './oracle'
 
 async function waitTx(tx) {
   const receipt = await tx.wait(1)
@@ -101,6 +103,34 @@ export async function cancelOrder({ orderId }) {
   if (!signer) throw new Error('Wallet not connected')
   const mgr     = new Contract(ADDRESSES.ORDER_MANAGER, ABI_ORDER_MANAGER, signer)
   const tx      = await mgr.cancelOrder(orderId)
+  const receipt = await waitTx(tx)
+  return { hash: tx.hash, receipt }
+}
+
+/**
+ * Execute a triggered order.
+ * Callable by anyone — the caller earns the order's executionFee.
+ * The trigger condition (triggerAbove ? price >= triggerPrice : price <= triggerPrice)
+ * is evaluated on-chain; the tx will revert if the condition is not yet met.
+ *
+ * @param {{ orderId: number|bigint }} params
+ * @returns {{ hash: string, receipt: object }}
+ */
+export async function executeOrder({ orderId }) {
+  const signer = getSigner()
+  if (!signer) throw new Error('Wallet not connected')
+  const mgr = new Contract(ADDRESSES.ORDER_MANAGER, ABI_ORDER_MANAGER, signer)
+
+  /* Fetch the order to get the assetKey, then resolve the Pyth price update */
+  const order = await mgr.getOrder(orderId)
+  if (!order.active) throw new Error(`Order ${orderId} is not active`)
+
+  const market = MARKETS.find((m) => m.key === order.assetKey)
+  if (!market) throw new Error(`No market found for assetKey ${order.assetKey}`)
+
+  const { updateData, fee } = await getPythUpdateArgs(signer)
+
+  const tx = await mgr.executeOrder(orderId, updateData, { value: fee })
   const receipt = await waitTx(tx)
   return { hash: tx.hash, receipt }
 }
