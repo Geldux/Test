@@ -93,7 +93,7 @@ export function useWallet() {
   }, [])
 
   const disconnect = useCallback(() => {
-    _provider = null; _signer = null; _account = null
+    _provider = null; _signer = null; _account = null; _readProv = null
     setAccount(null); setChainOk(false)
   }, [])
 

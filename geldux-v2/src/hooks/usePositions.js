@@ -16,9 +16,7 @@ export function usePositions(account) {
        BrowserProvider rate limits are only triggered by eth_blockNumber polling
        during tx.wait, not by plain eth_call reads. Fall back to JsonRpcProvider. */
     const rp = getProvider() || getReadProvider()
-    console.log('[usePositions] refresh — account:', addr, '| provider type:', rp?.constructor?.name ?? 'none')
     if (!addr || !rp) {
-      console.warn('[usePositions] skipping refresh — addr:', addr, 'rp:', rp)
       setPositions([]); setOrders([]); setCrossAccount(null)
       return
     }
@@ -40,9 +38,6 @@ export function usePositions(account) {
         console.error('[usePositions] traderOrders FAILED:', orderIdsRes.reason?.message ?? orderIdsRes.reason)
       if (crossAccRes.status === 'rejected')
         console.error('[usePositions] cross.getAccount FAILED:', crossAccRes.reason?.message ?? crossAccRes.reason)
-      else
-        console.log('[usePositions] cross.getAccount raw:', crossAccRes.value)
-
       /* ── Isolated positions ─────────────────────────────────────────── */
       let posList = []
       if (posIdsRes.status === 'fulfilled' && posIdsRes.value?.length) {
@@ -110,13 +105,12 @@ export function usePositions(account) {
         crossAcc2 = {
           balance:     Number(balance) / 1e18,
           posIds:      posIds.map((id) => Number(id)),
-          equity:      equityRes.status === 'fulfilled' ? Number(equityRes.value) / 1e18 : 0,
-          marginUsed:  mmRes.status === 'fulfilled'     ? Number(mmRes.value)     / 1e18 : 0,
+          equity:      equityRes.status === 'fulfilled' ? Number(equityRes.value) / 1e18 : null,
+          marginUsed:  mmRes.status === 'fulfilled'     ? Number(mmRes.value)     / 1e18 : null,
           freeMargin:  equityRes.status === 'fulfilled' && mmRes.status === 'fulfilled'
             ? Math.max(0, Number(equityRes.value) / 1e18 - Number(mmRes.value) / 1e18)
-            : 0,
+            : null,
         }
-        console.log('[usePositions] crossAcc2:', crossAcc2)
       }
 
       if (!mountedRef.current) return

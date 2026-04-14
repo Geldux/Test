@@ -3,7 +3,7 @@ import { Contract } from 'ethers'
 import { HERMES_URL } from '@/config/chain'
 import { MARKETS, PYTH_IDS } from '@/config/markets'
 import { ADDRESSES, ABI_PERP_CONFIG, ABI_PYTH } from '@/config/contracts'
-import { getReadProvider, getProvider } from './useWallet'
+import { getReadProvider } from './useWallet'
 
 /* Module-level price cache — shared across hook instances */
 const _prices   = {}   /* sym → { price, conf, publishTime } */
@@ -50,17 +50,19 @@ async function fetchOnChainData() {
     await Promise.allSettled(
       MARKETS.map(async (m) => {
         try {
-          const [markRaw, fundRaw] = await Promise.all([
-            cfg.getMarkPrice(m.key, true),   /* forLong=true for mid-price reference */
-            cfg.computeFundingRate(m.key),
-          ])
+          const markRaw = await cfg.getMarkPrice(m.key, true)  /* forLong=true for mid-price reference */
           if (markRaw) {
             const mark = Number(markRaw) / 1e18
             if (mark > 0) _prices[m.sym] = { ..._prices[m.sym], mark }
           }
+        } catch (e) {
+          console.warn(`[usePrices] ${m.sym} mark fetch failed:`, e?.message ?? e)
+        }
+        try {
+          const fundRaw = await cfg.computeFundingRate(m.key)
           _funding[m.sym] = Number(fundRaw) / 1e18
         } catch (e) {
-          console.warn(`[usePrices] ${m.sym} mark/funding fetch failed:`, e?.message ?? e)
+          console.warn(`[usePrices] ${m.sym} funding fetch failed:`, e?.message ?? e)
         }
         try {
           const [lo, so] = await cfg.getOI(m.key)
