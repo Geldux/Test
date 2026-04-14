@@ -10,21 +10,30 @@ let _readProv = null
 export function getProvider()     { return _provider }
 export function getSigner()       { return _signer }
 export function getAccount()      { return _account }
+function _isValidRpcUrl(u) {
+  if (!u) return false
+  if (u.endsWith('/undefined') || u.endsWith('/null')) return false
+  /* Catch double-URL: env var was a full URL pasted into a field expecting only the key */
+  if (/\/https?:\/\//.test(u)) return false
+  return true
+}
+
 export function getReadProvider() {
   if (_readProv) return _readProv
-  /* Skip Alchemy if API key is not configured (URL ends in /undefined or /null) */
-  const urls = RPC_LIST.filter((u) => !u.endsWith('/undefined') && !u.endsWith('/null'))
-  const tryList = urls.length ? urls : RPC_LIST
-  console.log('[getReadProvider] ALCHEMY_KEY present:', urls.length > 0 ? urls[0].includes('alchemy') : false,
-    '| candidates:', tryList.map((u) => u.replace(/\/[^/]+$/, '/***')))
+  const tryList = RPC_LIST.filter(_isValidRpcUrl)
+  if (!tryList.length) {
+    console.error('[getReadProvider] no valid RPC URLs — check VITE_ALCHEMY_API_KEY in env')
+    return null
+  }
   for (const url of tryList) {
     try {
       _readProv = new JsonRpcProvider(url)
-      console.log('[getReadProvider] created provider for:', url.replace(/\/[^/]+$/, '/***'))
+      /* Log once on first creation — mask key portion for security */
+      console.log('[getReadProvider] using:', url.replace(/\/v2\/[^/]+$/, '/v2/***').replace(/\/v2$/, '/v2/***'))
       return _readProv
     } catch (_) {}
   }
-  console.error('[getReadProvider] FAILED — no valid RPC URL found in:', tryList)
+  console.error('[getReadProvider] FAILED — could not construct provider from:', tryList.map((u) => u.slice(0, 40) + '…'))
   return null
 }
 
