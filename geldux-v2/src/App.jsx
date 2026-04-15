@@ -42,7 +42,8 @@ export default function App() {
   const { positions, orders, crossAccount, loading, refresh } = usePositions(account)
   const { stats: vaultStats }                              = useVaultStats()
   const { entries: histEntries, summary: histSummary,
-          loading: histLoading, reload: histReload }       = useHistory(account)
+          loading: histLoading, reload: histReload,
+          error: histError }                               = useHistory(account)
 
   /* vault summary */
   const vault = vaultStats ? {
@@ -351,7 +352,7 @@ export default function App() {
             {portfolioTab === 'history' && (
               <div style={{ padding: '0 24px 24px' }}>
                 <HistoryPanel
-                  entries={histEntries} loading={histLoading}
+                  entries={histEntries} loading={histLoading} error={histError}
                   account={account} reload={histReload}
                 />
               </div>
@@ -585,7 +586,7 @@ export default function App() {
             {portfolioTab === 'history' && (
               <div style={{ padding: '8px 12px 28px' }}>
                 <HistoryPanel
-                  entries={histEntries} loading={histLoading}
+                  entries={histEntries} loading={histLoading} error={histError}
                   account={account} reload={histReload}
                 />
               </div>

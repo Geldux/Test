@@ -1,35 +1,33 @@
 /**
- * useHistory — progressive on-chain event history for the connected wallet.
+ * useHistory — on-chain event history for the connected wallet.
  *
- * Futures/perp coverage:
- *   PerpCore.Opened                  — isolated open
- *   PerpCore.Closed                  — isolated close (matched to user via posId)
- *   CrossMargin.PositionOpened       — cross open
- *   CrossMargin.PositionClosed       — cross close
- *   CrossMargin.PositionIncreased    — cross collateral add
- *   CrossMargin.Deposited            — cross margin deposit
- *   CrossMargin.Withdrawn            — cross margin withdrawal
- *   OrderManager.OrderCreated        — limit / SL / TP placed
- *   OrderManager.OrderCancelled      — order cancelled
+ * Perp / futures coverage:
+ *   PerpCore.Opened           — isolated open
+ *   PerpCore.Closed           — isolated close (matched to user via posId)
+ *   CrossMargin.Deposited     — cross margin deposit
+ *   CrossMargin.Withdrawn     — cross margin withdrawal
+ *   CrossMargin.PositionOpened  — cross open
+ *   CrossMargin.PositionClosed  — cross close (payout stored as amount)
+ *   CrossMargin.PositionIncreased — cross collateral add
+ *   OrderManager.OrderCreated   — limit / SL / TP placed
+ *   OrderManager.OrderCancelled — order cancelled
  *
- * NOT trackable from events:
+ * NOT trackable from events (contract limitation):
  *   PerpCore isolated increases — increaseWithPermitAndPriceUpdate emits no event.
- *   OrderExecuted               — only indexes the keeper address, not the trader.
+ *   OrderExecuted               — indexes the keeper, not the trader.
  *
- * Closed events carry no owner arg and are matched client-side against posIds
- * found in accumulated Opened events.  The wide MAX_LOOKBACK window (~11.5 days)
- * ensures opens and closes that straddle a day boundary are both captured.
+ * RPC notes:
+ *   Public Base Sepolia nodes (sepolia.base.org, publicnode.com) allow ~10-20
+ *   concurrent eth_getLogs calls before rate-limiting.  CONCURRENCY = 1 keeps
+ *   within-type queries sequential; 9 event types run in parallel in Promise.all,
+ *   giving at most 9 simultaneous requests — safe for all RPCs.
  *
- * Loading strategy:
- *   Start at the most recent BATCH_BLOCKS window, publish results after each
- *   batch so the UI updates incrementally, then extend backward until
- *   MAX_LOOKBACK blocks are exhausted.  No early-stop — always scans the full
- *   window so older perp trades are not silently dropped.
+ *   CHUNK_SIZE = 1 000 keeps individual block ranges within the limits of
+ *   public nodes (most accept up to 2 000 but 1 000 is safe everywhere).
  *
- * RPC safety:
- *   CHUNK_SIZE = 2 000 keeps each eth_getLogs call within the Alchemy free-tier
- *   limit.  CONCURRENCY = 5 fires five chunks per event type in parallel to
- *   reduce wall-clock time without overloading the RPC.
+ * Loading:
+ *   Progressive: results published after each BATCH_BLOCKS window so the UI
+ *   shows data as it arrives.  Hard cap at MAX_LOOKBACK (~2.3 days).
  */
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { Contract } from 'ethers'
@@ -41,18 +39,19 @@ import { getReadProvider } from './useWallet'
 
 export const BASESCAN_TX = 'https://sepolia.basescan.org/tx/'
 
-const CHUNK_SIZE  = 2_000    /* blocks per eth_getLogs call */
-const CONCURRENCY = 5        /* parallel chunks per event type per batch */
-const BATCH_BLOCKS = 20_000  /* blocks per progressive pass (~11 h) */
-const MAX_LOOKBACK = 500_000 /* hard cap (~11.5 days on Base Sepolia at 2 s/block) */
+const CHUNK_SIZE   = 1_000    /* blocks per eth_getLogs call — safe on all public RPCs */
+const CONCURRENCY  = 1        /* sequential chunks per event type — prevents rate-limiting */
+const BATCH_BLOCKS = 20_000   /* blocks per progressive pass (~11 h at 2 s/block) */
+const MAX_LOOKBACK = 100_000  /* hard cap (~2.3 days; 5 batches of 20k) */
 
 /**
- * Fetch all matching events between fromBlock and toBlock.
- * Splits the range into CHUNK_SIZE slices; up to CONCURRENCY slices are
- * fetched in parallel.  Failed slices are skipped; successful ones accumulate.
+ * Fetch all events in [fromBlock, toBlock] using sequential CHUNK_SIZE slices.
+ * CONCURRENCY=1 means one request at a time per event type, preventing
+ * rate-limit failures on public RPCs.  Chunk failures are logged and skipped.
  */
-async function queryChunked(contract, filter, fromBlock, toBlock) {
+async function queryChunked(contract, filter, fromBlock, toBlock, label) {
   const out = []
+  let failCount = 0
   for (let lo = fromBlock; lo <= toBlock; lo += CHUNK_SIZE * CONCURRENCY) {
     const batch = []
     for (let i = 0; i < CONCURRENCY; i++) {
@@ -61,13 +60,18 @@ async function queryChunked(contract, filter, fromBlock, toBlock) {
       const chi = Math.min(clo + CHUNK_SIZE - 1, toBlock)
       batch.push(
         contract.queryFilter(filter, clo, chi).catch((e) => {
-          console.warn('[useHistory] chunk query failed:', e?.message ?? e)
+          failCount++
+          console.warn(`[useHistory] ${label ?? 'event'} chunk [${clo}-${chi}] failed:`, e?.message ?? e)
           return []
         })
       )
     }
     const results = await Promise.all(batch)
     results.forEach((r) => out.push(...r))
+  }
+  if (failCount > 0) {
+    const total = Math.ceil((toBlock - fromBlock + 1) / CHUNK_SIZE)
+    console.warn(`[useHistory] ${label}: ${failCount}/${total} chunks failed — partial results only`)
   }
   return out
 }
@@ -90,13 +94,13 @@ function buildEntries(acc, currentBlock) {
     ordersCreated, ordersCancelled,
   } = acc
 
-  /* Match PerpCore Closed events to this user via accumulated Opened posIds */
+  /* Closed events have no owner — match against this user's known posIds */
   const userPosIds = new Set(opened.map((e) => e.args.posId.toString()))
   const closedMine = closedAll.filter((e) => userPosIds.has(e.args.posId.toString()))
 
   const all = []
 
-  /* ── Isolated opens ────────────────────────────────────────────── */
+  /* Isolated opens */
   opened.forEach((e) => {
     const { posId, key, isLong, leverage, collateral } = e.args
     const col = Number(collateral) / 1e18
@@ -109,26 +113,26 @@ function buildEntries(acc, currentBlock) {
     })
   })
 
-  /* ── Isolated closes (matched to user's posIds) ────────────────── */
+  /* Isolated closes */
   closedMine.forEach((e) => {
     const { posId, pnl } = e.args
     const matched = opened.find((o) => o.args.posId.toString() === posId.toString())
     all.push({
       type: 'close', hash: e.transactionHash,
       blockNumber: e.blockNumber, ts: estimateTs(e.blockNumber, currentBlock),
-      sym:       matched ? symFromKey(matched.args.key) : '?',
-      isLong:    matched ? matched.args.isLong : null,
-      posId:     posId.toString(),
-      leverage:  matched ? Number(matched.args.leverage) : null,
+      sym:        matched ? symFromKey(matched.args.key) : '?',
+      isLong:     matched ? matched.args.isLong : null,
+      posId:      posId.toString(),
+      leverage:   matched ? Number(matched.args.leverage) : null,
       collateral: matched ? Number(matched.args.collateral) / 1e18 : null,
-      size:      matched
+      size:       matched
         ? (Number(matched.args.collateral) / 1e18) * Number(matched.args.leverage)
         : null,
       pnl: Number(pnl) / 1e18, amount: null, label: null,
     })
   })
 
-  /* ── Cross opens ───────────────────────────────────────────────── */
+  /* Cross opens */
   xOpened.forEach((e) => {
     const { posId, key } = e.args
     all.push({
@@ -139,7 +143,7 @@ function buildEntries(acc, currentBlock) {
     })
   })
 
-  /* ── Cross closes — payout ≠ PnL; stored as amount ────────────── */
+  /* Cross closes — payout stored as amount */
   xClosed.forEach((e) => {
     const { posId, payout } = e.args
     const matched = xOpened.find((o) => o.args.posId.toString() === posId.toString())
@@ -153,7 +157,7 @@ function buildEntries(acc, currentBlock) {
     })
   })
 
-  /* ── Cross collateral adds (PositionIncreased) ─────────────────── */
+  /* Cross collateral adds */
   xIncreased.forEach((e) => {
     const { posId, extra } = e.args
     const matched = xOpened.find((o) => o.args.posId.toString() === posId.toString())
@@ -167,7 +171,7 @@ function buildEntries(acc, currentBlock) {
     })
   })
 
-  /* ── Cross deposits ────────────────────────────────────────────── */
+  /* Cross deposits */
   deposited.forEach((e) => {
     all.push({
       type: 'deposit', hash: e.transactionHash,
@@ -178,7 +182,7 @@ function buildEntries(acc, currentBlock) {
     })
   })
 
-  /* ── Cross withdrawals ─────────────────────────────────────────── */
+  /* Cross withdrawals */
   withdrawn.forEach((e) => {
     all.push({
       type: 'withdraw', hash: e.transactionHash,
@@ -189,7 +193,7 @@ function buildEntries(acc, currentBlock) {
     })
   })
 
-  /* ── Orders created ────────────────────────────────────────────── */
+  /* Orders created */
   ordersCreated.forEach((e) => {
     const { id, t: orderType } = e.args
     all.push({
@@ -202,7 +206,7 @@ function buildEntries(acc, currentBlock) {
     })
   })
 
-  /* ── Orders cancelled ──────────────────────────────────────────── */
+  /* Orders cancelled */
   ordersCancelled.forEach((e) => {
     const { id } = e.args
     all.push({
@@ -214,31 +218,23 @@ function buildEntries(acc, currentBlock) {
     })
   })
 
-  /* Newest first */
   all.sort((a, b) => b.blockNumber - a.blockNumber)
   return all
 }
 
-/** Build summary metrics from all accumulated event sets. */
 function buildSummary(acc) {
   const { opened, xOpened, closedAll, deposited, withdrawn, xClosed } = acc
-  const userPosIds  = new Set(opened.map((e) => e.args.posId.toString()))
-  const closedMine  = closedAll.filter((e) => userPosIds.has(e.args.posId.toString()))
-
-  const realizedPnl      = closedMine.reduce((s, e) => s + Number(e.args.pnl) / 1e18, 0)
-  const totalDeposits    = deposited.reduce((s, e)  => s + Number(e.args.amt) / 1e18, 0)
-  const totalWithdrawals = withdrawn.reduce((s, e)  => s + Number(e.args.amt) / 1e18, 0)
-  const totalVolume      = opened.reduce((s, e) => {
-    return s + (Number(e.args.collateral) / 1e18) * Number(e.args.leverage)
-  }, 0)
+  const userPosIds = new Set(opened.map((e) => e.args.posId.toString()))
+  const closedMine = closedAll.filter((e) => userPosIds.has(e.args.posId.toString()))
 
   return {
     tradeCount:       opened.length + xOpened.length,
     closedCount:      closedMine.length + xClosed.length,
-    realizedPnl,
-    totalDeposits,
-    totalWithdrawals,
-    totalVolume,
+    realizedPnl:      closedMine.reduce((s, e) => s + Number(e.args.pnl) / 1e18, 0),
+    totalDeposits:    deposited.reduce((s, e) => s + Number(e.args.amt) / 1e18, 0),
+    totalWithdrawals: withdrawn.reduce((s, e) => s + Number(e.args.amt) / 1e18, 0),
+    totalVolume:      opened.reduce((s, e) =>
+      s + (Number(e.args.collateral) / 1e18) * Number(e.args.leverage), 0),
   }
 }
 
@@ -246,6 +242,7 @@ export function useHistory(account) {
   const [entries, setEntries] = useState([])
   const [summary, setSummary] = useState(null)
   const [loading, setLoading] = useState(false)
+  const [error,   setError]   = useState(null)
   const mountedRef            = useRef(true)
 
   useEffect(() => {
@@ -254,60 +251,88 @@ export function useHistory(account) {
   }, [])
 
   const load = useCallback(async () => {
-    if (!account) { setEntries([]); setSummary(null); return }
+    if (!account) { setEntries([]); setSummary(null); setError(null); return }
     const rp = getReadProvider()
-    if (!rp) { console.warn('[useHistory] no read provider'); return }
+    if (!rp) {
+      console.error('[useHistory] no read provider — check RPC config')
+      setError('No RPC provider available. Check network configuration.')
+      return
+    }
 
     setEntries([])
     setSummary(null)
+    setError(null)
     setLoading(true)
 
     try {
       const currentBlock = await rp.getBlockNumber()
       const limitBlock   = Math.max(0, currentBlock - MAX_LOOKBACK)
 
+      console.log(`[useHistory] scanning blocks ${limitBlock}–${currentBlock} for ${account.slice(0, 8)}…`)
+
       const core     = new Contract(ADDRESSES.PERP_CORE,     ABI_PERP_CORE,     rp)
       const cross    = new Contract(ADDRESSES.CROSS_MARGIN,  ABI_CROSS_MARGIN,  rp)
       const orderMgr = new Contract(ADDRESSES.ORDER_MANAGER, ABI_ORDER_MANAGER, rp)
 
-      /* Accumulator grows across progressive batches */
       const acc = {
         opened: [], closedAll: [], deposited: [], withdrawn: [],
         xOpened: [], xClosed: [], xIncreased: [],
         ordersCreated: [], ordersCancelled: [],
       }
 
-      let toBlock = currentBlock
+      let toBlock    = currentBlock
+      let batchIndex = 0
 
-      /* Scan the full MAX_LOOKBACK window without early-stopping.
-       * Results are published after each batch so the UI shows entries
-       * as they arrive.  Skipping the early-stop ensures older perp
-       * trades are not silently dropped for active wallets. */
       while (toBlock > limitBlock) {
         if (!mountedRef.current) return
 
         const fromBlock = Math.max(limitBlock, toBlock - BATCH_BLOCKS + 1)
+        batchIndex++
 
-        /* All 9 event streams fetched in parallel, each internally
-         * parallelised across CONCURRENCY chunks. */
+        console.log(`[useHistory] batch ${batchIndex}: blocks ${fromBlock}–${toBlock}`)
+
+        /* 9 event types in parallel; each type queries its chunks sequentially.
+         * Peak concurrency = 9 simultaneous eth_getLogs calls — safe on all RPCs. */
         const [
           opened, closedAll,
           deposited, withdrawn,
           xOpened, xClosed, xIncreased,
           ordersCreated, ordersCancelled,
         ] = await Promise.all([
-          queryChunked(core,     core.filters.Opened(null, account),              fromBlock, toBlock),
-          queryChunked(core,     core.filters.Closed(),                            fromBlock, toBlock),
-          queryChunked(cross,    cross.filters.Deposited(account),                fromBlock, toBlock),
-          queryChunked(cross,    cross.filters.Withdrawn(account),                fromBlock, toBlock),
-          queryChunked(cross,    cross.filters.PositionOpened(account),           fromBlock, toBlock),
-          queryChunked(cross,    cross.filters.PositionClosed(account),           fromBlock, toBlock),
-          queryChunked(cross,    cross.filters.PositionIncreased(account),        fromBlock, toBlock),
-          queryChunked(orderMgr, orderMgr.filters.OrderCreated(null, account),   fromBlock, toBlock),
-          queryChunked(orderMgr, orderMgr.filters.OrderCancelled(null, account), fromBlock, toBlock),
+          queryChunked(core,     core.filters.Opened(null, account),              fromBlock, toBlock, 'Opened'),
+          queryChunked(core,     core.filters.Closed(),                            fromBlock, toBlock, 'Closed'),
+          queryChunked(cross,    cross.filters.Deposited(account),                fromBlock, toBlock, 'Deposited'),
+          queryChunked(cross,    cross.filters.Withdrawn(account),                fromBlock, toBlock, 'Withdrawn'),
+          queryChunked(cross,    cross.filters.PositionOpened(account),           fromBlock, toBlock, 'PositionOpened'),
+          queryChunked(cross,    cross.filters.PositionClosed(account),           fromBlock, toBlock, 'PositionClosed'),
+          queryChunked(cross,    cross.filters.PositionIncreased(account),        fromBlock, toBlock, 'PositionIncreased'),
+          queryChunked(orderMgr, orderMgr.filters.OrderCreated(null, account),   fromBlock, toBlock, 'OrderCreated'),
+          queryChunked(orderMgr, orderMgr.filters.OrderCancelled(null, account), fromBlock, toBlock, 'OrderCancelled'),
         ])
 
         if (!mountedRef.current) return
+
+        /* Diagnostic: first batch shows whether queries are reaching the chain */
+        if (batchIndex === 1) {
+          console.log('[useHistory] first batch results:', {
+            opened: opened.length,
+            closedAll: closedAll.length,
+            deposited: deposited.length,
+            withdrawn: withdrawn.length,
+            xOpened: xOpened.length,
+            xClosed: xClosed.length,
+            ordersCreated: ordersCreated.length,
+          })
+          const total = opened.length + deposited.length + xOpened.length + ordersCreated.length
+          if (total === 0) {
+            console.warn(
+              '[useHistory] zero events found in first batch.\n' +
+              '  — If you have traded, this likely means the RPC is rate-limiting.\n' +
+              '  — Set VITE_ALCHEMY_API_KEY in .env.local to use Alchemy instead of public nodes.\n' +
+              `  — RPC in use: ${rp?._getConnection?.()?.url ?? '(unknown)'}`
+            )
+          }
+        }
 
         acc.opened.push(...opened)
         acc.closedAll.push(...closedAll)
@@ -325,7 +350,8 @@ export function useHistory(account) {
         toBlock = fromBlock - 1
       }
     } catch (e) {
-      console.warn('[useHistory] load failed:', e?.message ?? e)
+      console.error('[useHistory] load failed:', e?.message ?? e)
+      if (mountedRef.current) setError(e?.message ?? 'History load failed — check console for details')
     } finally {
       if (mountedRef.current) setLoading(false)
     }
@@ -333,5 +359,5 @@ export function useHistory(account) {
 
   useEffect(() => { load() }, [load])
 
-  return { entries, summary, loading, reload: load }
+  return { entries, summary, loading, error, reload: load }
 }

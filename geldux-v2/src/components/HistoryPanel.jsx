@@ -121,7 +121,7 @@ function EntryRow({ entry }) {
 }
 
 /* ── Empty state ─────────────────────────────────────────────────── */
-function EmptyState({ connected, loading }) {
+function EmptyState({ connected, loading, error }) {
   if (!connected) {
     return (
       <div className="empty-state" style={{ padding: '40px 16px' }}>
@@ -138,16 +138,30 @@ function EmptyState({ connected, loading }) {
       </div>
     )
   }
+  if (error) {
+    return (
+      <div className="empty-state" style={{ padding: '40px 16px' }}>
+        <span className="empty-icon">⚠</span>
+        <span style={{ color: 'var(--text-2)' }}>Failed to load history</span>
+        <span style={{ fontSize: 11, color: 'var(--text-4)', maxWidth: 260, textAlign: 'center', lineHeight: 1.5 }}>
+          {error}
+        </span>
+        <span style={{ fontSize: 11, color: 'var(--text-4)' }}>
+          Check browser console for details.
+        </span>
+      </div>
+    )
+  }
   return (
     <div className="empty-state" style={{ padding: '40px 16px' }}>
       <span className="empty-icon">◎</span>
-      No history in the last ~11 days
+      No history in the last ~2 days
     </div>
   )
 }
 
 /* ── Main component ──────────────────────────────────────────────── */
-export function HistoryPanel({ entries, loading, account, reload }) {
+export function HistoryPanel({ entries, loading, error, account, reload }) {
   const [filter, setFilter] = useState('All')
 
   const visible = entries.filter((e) => matchesFilter(e.type, filter))
@@ -187,7 +201,7 @@ export function HistoryPanel({ entries, loading, account, reload }) {
         </button>
       </div>
 
-      {/* Progressive load indicator — shown while older batches are still fetching */}
+      {/* Progressive load indicator — older batches still fetching */}
       {loading && entries.length > 0 && (
         <div style={{
           display: 'flex', alignItems: 'center', gap: 8, padding: '10px 0',
@@ -201,10 +215,14 @@ export function HistoryPanel({ entries, loading, account, reload }) {
 
       {/* Entry list */}
       <div>
-        {(!account || (!loading && entries.length === 0)) ? (
-          <EmptyState connected={!!account} loading={loading} />
+        {!account ? (
+          <EmptyState connected={false} loading={false} error={null} />
+        ) : error && entries.length === 0 ? (
+          <EmptyState connected={true} loading={false} error={error} />
         ) : loading && entries.length === 0 ? (
-          <EmptyState connected={!!account} loading={loading} />
+          <EmptyState connected={true} loading={true} error={null} />
+        ) : !loading && entries.length === 0 ? (
+          <EmptyState connected={true} loading={false} error={null} />
         ) : visible.length === 0 ? (
           <div className="empty-state" style={{ padding: '32px 16px' }}>
             No {filter.toLowerCase()} activity found
