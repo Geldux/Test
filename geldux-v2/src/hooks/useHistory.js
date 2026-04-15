@@ -26,7 +26,30 @@ import { getReadProvider } from './useWallet'
 
 export const BASESCAN_TX = 'https://sepolia.basescan.org/tx/'
 
-const BLOCK_RANGE = 500_000
+/* eth_getLogs limits:
+ *   Alchemy free tier  — 2 000 blocks/request
+ *   Alchemy Growth+    — 10 000 blocks/request
+ *   Public Base nodes  — 1 000–5 000 blocks/request
+ * CHUNK_SIZE stays within the tightest limit so queries succeed on all tiers.
+ * BLOCK_RANGE controls total history depth (10 chunks × 2 000 = ~11 h). */
+const CHUNK_SIZE  = 2_000
+const BLOCK_RANGE = 20_000   /* ~11 hours on Base Sepolia at 2 s/block */
+
+/* Fetch one event type across the full range in safe-sized chunks.
+ * Chunk failures are swallowed individually; successful chunks accumulate. */
+async function queryChunked(contract, filter, fromBlock, toBlock) {
+  const out = []
+  for (let lo = fromBlock; lo <= toBlock; lo += CHUNK_SIZE) {
+    const hi = Math.min(lo + CHUNK_SIZE - 1, toBlock)
+    try {
+      const chunk = await contract.queryFilter(filter, lo, hi)
+      out.push(...chunk)
+    } catch (e) {
+      console.warn('[useHistory] chunk query failed:', e?.message ?? e)
+    }
+  }
+  return out
+}
 
 const ORDER_TYPE_LABEL = { 0: 'Limit', 1: 'Stop-Loss', 2: 'Take-Profit' }
 
@@ -57,43 +80,25 @@ export function useHistory(account) {
       const cross    = new Contract(ADDRESSES.CROSS_MARGIN,  ABI_CROSS_MARGIN,  rp)
       const orderMgr = new Contract(ADDRESSES.ORDER_MANAGER, ABI_ORDER_MANAGER, rp)
 
+      /* All 8 streams fetched in parallel, each chunked to stay within
+       * the RPC's eth_getLogs block-range limit.  Individual chunk
+       * failures are logged inside queryChunked; partial results
+       * accumulate so a single bad chunk does not blank the whole feed. */
       const [
-        openedRes, closedAllRes,
-        depositedRes, withdrawnRes,
-        xOpenedRes, xClosedRes,
-        orderCreatedRes, orderCancelledRes,
-      ] = await Promise.allSettled([
-        core.queryFilter(core.filters.Opened(null, account),               fromBlock, currentBlock),
-        core.queryFilter(core.filters.Closed(),                             fromBlock, currentBlock),
-        cross.queryFilter(cross.filters.Deposited(account),                fromBlock, currentBlock),
-        cross.queryFilter(cross.filters.Withdrawn(account),                fromBlock, currentBlock),
-        cross.queryFilter(cross.filters.PositionOpened(account),           fromBlock, currentBlock),
-        cross.queryFilter(cross.filters.PositionClosed(account),           fromBlock, currentBlock),
-        orderMgr.queryFilter(orderMgr.filters.OrderCreated(null, account), fromBlock, currentBlock),
-        orderMgr.queryFilter(orderMgr.filters.OrderCancelled(null, account), fromBlock, currentBlock),
+        opened, closedAll,
+        deposited, withdrawn,
+        xOpened, xClosed,
+        ordersCreated, ordersCancelled,
+      ] = await Promise.all([
+        queryChunked(core,     core.filters.Opened(null, account),               fromBlock, currentBlock),
+        queryChunked(core,     core.filters.Closed(),                             fromBlock, currentBlock),
+        queryChunked(cross,    cross.filters.Deposited(account),                 fromBlock, currentBlock),
+        queryChunked(cross,    cross.filters.Withdrawn(account),                 fromBlock, currentBlock),
+        queryChunked(cross,    cross.filters.PositionOpened(account),            fromBlock, currentBlock),
+        queryChunked(cross,    cross.filters.PositionClosed(account),            fromBlock, currentBlock),
+        queryChunked(orderMgr, orderMgr.filters.OrderCreated(null, account),    fromBlock, currentBlock),
+        queryChunked(orderMgr, orderMgr.filters.OrderCancelled(null, account),  fromBlock, currentBlock),
       ])
-
-      const warnFailed = (name, res) => {
-        if (res.status === 'rejected')
-          console.warn(`[useHistory] ${name} query failed:`, res.reason?.message ?? res.reason)
-      }
-      warnFailed('Opened',         openedRes)
-      warnFailed('Closed',         closedAllRes)
-      warnFailed('Deposited',      depositedRes)
-      warnFailed('Withdrawn',      withdrawnRes)
-      warnFailed('CrossOpened',    xOpenedRes)
-      warnFailed('CrossClosed',    xClosedRes)
-      warnFailed('OrderCreated',   orderCreatedRes)
-      warnFailed('OrderCancelled', orderCancelledRes)
-
-      const opened          = openedRes.status          === 'fulfilled' ? openedRes.value          : []
-      const closedAll       = closedAllRes.status       === 'fulfilled' ? closedAllRes.value       : []
-      const deposited       = depositedRes.status       === 'fulfilled' ? depositedRes.value       : []
-      const withdrawn       = withdrawnRes.status       === 'fulfilled' ? withdrawnRes.value       : []
-      const xOpened         = xOpenedRes.status         === 'fulfilled' ? xOpenedRes.value         : []
-      const xClosed         = xClosedRes.status         === 'fulfilled' ? xClosedRes.value         : []
-      const ordersCreated   = orderCreatedRes.status    === 'fulfilled' ? orderCreatedRes.value    : []
-      const ordersCancelled = orderCancelledRes.status  === 'fulfilled' ? orderCancelledRes.value  : []
 
       /* Match PerpCore Closed events to this user's posIds */
       const userPosIds = new Set(opened.map((e) => e.args.posId.toString()))

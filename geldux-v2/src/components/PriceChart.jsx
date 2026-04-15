@@ -167,7 +167,11 @@ export function PriceChart({ sym, prices, isDark }) {
     if (!seriesRef.current || symRef.current !== sym) return
     const store = _ticks.get(sym)
     const last  = store?.[store.length - 1]
-    if (last) seriesRef.current.update({ ...last })
+    if (!last) return
+    seriesRef.current.update({ ...last })
+    /* Re-apply autoScale so sudden pumps/dumps stay inside the visible
+       price range — without this the line can scroll off the Y axis. */
+    chartRef.current?.priceScale('right').applyOptions({ autoScale: true })
   }, [prices, sym])
 
   return (
