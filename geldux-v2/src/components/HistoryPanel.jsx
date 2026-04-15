@@ -139,7 +139,7 @@ function EmptyState({ connected, loading }) {
   return (
     <div className="empty-state" style={{ padding: '40px 16px' }}>
       <span className="empty-icon">◎</span>
-      No history in the last ~11 days
+      No history in the last ~2 days
     </div>
   )
 }
