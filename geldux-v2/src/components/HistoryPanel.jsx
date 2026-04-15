@@ -18,6 +18,7 @@ const TYPE_META = {
   open:            { label: 'Opened',       badgeCls: 'badge-long',    dir: true  },
   close:           { label: 'Closed',       badgeCls: 'badge-short',   dir: true  },
   cross_open:      { label: 'Cross Open',   badgeCls: 'badge-long',    dir: false },
+  cross_increase:  { label: 'Cross Add',    badgeCls: 'badge-long',    dir: false },
   cross_close:     { label: 'Cross Close',  badgeCls: 'badge-short',   dir: false },
   deposit:         { label: 'Deposit',      badgeCls: 'badge-neutral', dir: false },
   withdraw:        { label: 'Withdraw',     badgeCls: 'badge-neutral', dir: false },
@@ -31,6 +32,7 @@ function entryDescription(e) {
     case 'open':            return `${dir} ${e.sym}${e.leverage ? ` · ${e.leverage}×` : ''}`
     case 'close':           return `${dir} ${e.sym}${e.leverage ? ` · ${e.leverage}×` : ''}`
     case 'cross_open':      return `${e.sym} (cross)`
+    case 'cross_increase':  return `${e.sym || '?'} (cross add)`
     case 'cross_close':     return `${e.sym} (cross)`
     case 'deposit':         return 'Cross Deposit'
     case 'withdraw':        return 'Cross Withdrawal'
@@ -45,7 +47,7 @@ function entryRightValue(e) {
     return { value: fmtPnl(e.pnl), cls: pnlClass(e.pnl) }
   if (e.type === 'open' && e.size != null)
     return { value: fmtUsdc(e.size), cls: '' }
-  if (e.type === 'cross_close' && e.amount != null)
+  if ((e.type === 'cross_close' || e.type === 'cross_increase') && e.amount != null)
     return { value: fmtUsdc(e.amount), cls: '' }
   if ((e.type === 'deposit' || e.type === 'withdraw') && e.amount != null)
     return { value: fmtUsdc(e.amount), cls: '' }
@@ -57,7 +59,7 @@ const FILTERS = ['All', 'Trades', 'Deposits', 'Orders']
 
 function matchesFilter(type, filter) {
   if (filter === 'All')      return true
-  if (filter === 'Trades')   return ['open', 'close', 'cross_open', 'cross_close'].includes(type)
+  if (filter === 'Trades')   return ['open', 'close', 'cross_open', 'cross_increase', 'cross_close'].includes(type)
   if (filter === 'Deposits') return ['deposit', 'withdraw'].includes(type)
   if (filter === 'Orders')   return ['order_created', 'order_cancelled'].includes(type)
   return false
@@ -139,7 +141,7 @@ function EmptyState({ connected, loading }) {
   return (
     <div className="empty-state" style={{ padding: '40px 16px' }}>
       <span className="empty-icon">◎</span>
-      No history in the last ~2 days
+      No history in the last ~11 days
     </div>
   )
 }
