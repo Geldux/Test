@@ -59,6 +59,7 @@ html.dark {
 
   /* layout */
   --header-h:    52px;
+  --chip-h:      44px;
   --nav-h:       68px;
   --sidebar-w:   220px;
   --panel-w:     320px;
@@ -460,9 +461,9 @@ img { display: block; max-width: 100%; }
 }
 .market-hero-sym   { font-size: 11px; font-weight: 700; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.07em; }
 .market-hero-price { font-size: 26px; font-weight: 800; color: var(--text-1); letter-spacing: -0.03em; font-family: var(--font-mono); }
-.stats-strip       { display: flex; gap: 0; overflow-x: auto; flex: 1; scrollbar-width: none; }
+.stats-strip       { display: flex; gap: 0; overflow-x: auto; flex: 1; scrollbar-width: none; align-items: center; }
 .stats-strip::-webkit-scrollbar { display: none; }
-.stats-strip-item  { flex-shrink: 0; padding: 0 16px; border-left: 1px solid var(--border); min-width: 80px; }
+.stats-strip-item  { flex-shrink: 0; padding: 4px 18px; border-left: 1px solid var(--border); min-width: 88px; }
 
 /* OI card */
 .oi-card        { padding: 14px 16px; }
@@ -497,11 +498,12 @@ img { display: block; max-width: 100%; }
 .pos-table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .pos-table th {
   font-size: 10px; color: var(--text-3); font-weight: 700; text-align: left;
-  padding: 8px 12px; border-bottom: 1px solid var(--border);
+  padding: 9px 14px; border-bottom: 1px solid var(--border);
   text-transform: uppercase; letter-spacing: 0.05em; white-space: nowrap;
+  background: var(--surface);
 }
 .pos-table td {
-  padding: 9px 12px; border-bottom: 1px solid var(--border);
+  padding: 10px 14px; border-bottom: 1px solid var(--border);
   vertical-align: middle; white-space: nowrap;
 }
 .pos-table tr:last-child td { border-bottom: none; }
@@ -554,18 +556,22 @@ img { display: block; max-width: 100%; }
   }
   .d-center-scroll { flex: 1; overflow-y: auto; }
 
-  /* Chart placeholder */
+  /* Chart area — PriceChart is absolutely positioned inside */
   .chart-area {
-    flex: 1; min-height: 200px;
-    display: flex; align-items: center; justify-content: center;
-    flex-direction: column; gap: 8px;
-    color: var(--text-4); font-size: 12px;
+    flex: 1; min-height: 260px;
+    position: relative; overflow: hidden;
     border-bottom: 1px solid var(--border);
     background: var(--bg);
   }
 
   /* Bottom positions panel */
-  .d-bottom { border-top: 1px solid var(--border); background: var(--surface); flex-shrink: 0; }
+  .d-bottom {
+    border-top: 1px solid var(--border);
+    background: var(--surface);
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+  }
 
   /* Right panel */
   .d-panel {
@@ -600,9 +606,10 @@ img { display: block; max-width: 100%; }
   /* Market chip strip */
   .m-market-chips {
     position: fixed; top: var(--header-h); left: 0; right: 0; z-index: 190;
+    height: var(--chip-h);
     background: var(--surface); border-bottom: 1px solid var(--border);
-    display: flex; overflow-x: auto; -webkit-overflow-scrolling: touch;
-    scrollbar-width: none;
+    display: flex; align-items: center; overflow-x: auto;
+    -webkit-overflow-scrolling: touch; scrollbar-width: none;
   }
   .m-market-chips::-webkit-scrollbar { display: none; }
   .m-chip {
@@ -618,7 +625,7 @@ img { display: block; max-width: 100%; }
   /* Scrollable content area */
   .m-content {
     position: fixed;
-    top: calc(var(--header-h) + 44px);
+    top: calc(var(--header-h) + var(--chip-h));
     left: 0; right: 0;
     bottom: var(--nav-h);
     overflow-y: auto;
@@ -663,7 +670,7 @@ img { display: block; max-width: 100%; }
   /* Mobile position cards */
   .m-pos-card {
     background: var(--surface); border: 1px solid var(--border);
-    border-radius: var(--r); padding: 14px 16px; margin-bottom: 10px;
+    border-radius: var(--r); padding: 14px 16px; margin-bottom: 12px;
   }
   .m-pos-card-header { display: flex; justify-content: space-between; align-items: center; cursor: pointer; }
   .m-pos-expanded {
@@ -704,11 +711,18 @@ img { display: block; max-width: 100%; }
   color: var(--text-1); font-family: var(--font-mono);
 }
 .empty-state {
-  padding: 48px 20px; text-align: center;
+  padding: 40px 20px; text-align: center;
   color: var(--text-3); font-size: 13px;
   display: flex; flex-direction: column; align-items: center; gap: 8px;
 }
-.empty-icon { font-size: 28px; opacity: 0.5; }
+.empty-icon { font-size: 26px; opacity: 0.45; }
+
+/* Loading state — spinner + label, same rhythm as empty-state */
+.loading-state {
+  padding: 40px 20px; text-align: center;
+  color: var(--text-3); font-size: 13px;
+  display: flex; flex-direction: column; align-items: center; gap: 12px;
+}
 
 /* skeleton shimmer */
 .skeleton {

@@ -2,12 +2,12 @@ import { MARKETS } from '@/config/markets'
 import { fmtUsdc, fmtPnl, pnlClass, calcPnlUsd } from '@/utils/format'
 
 /* ── Portfolio Summary ──────────────────────────────────────────────
-   Shows live unrealized PnL (from open positions + mark prices) and
-   history-derived metrics (realized PnL, volume, deposits).
-   All derived values show '—' until data is available.
+   Live unrealized PnL from open positions + mark prices.
+   History-derived metrics (realized PnL, volume, deposits) stream in
+   progressively as useHistory batches load.
 ──────────────────────────────────────────────────────────────────── */
 export function PortfolioSummary({ positions, prices, summary, historyLoading }) {
-  /* Unrealized PnL — live from positions + mark prices */
+  /* Unrealized PnL — live */
   let unrealizedPnl = null
   if (positions.length > 0) {
     let sum = 0
@@ -23,36 +23,43 @@ export function PortfolioSummary({ positions, prices, summary, historyLoading })
     unrealizedPnl = 0
   }
 
+  /* A stat is "live" if it doesn't depend on history */
   const stats = [
     {
       label: 'Open Positions',
       value: positions.length.toString(),
       cls:   '',
+      live:  true,
     },
     {
       label: 'Unrealized PnL',
       value: unrealizedPnl != null ? fmtPnl(unrealizedPnl) : '—',
       cls:   unrealizedPnl != null ? pnlClass(unrealizedPnl) : '',
+      live:  true,
     },
     {
       label: 'Realized PnL',
-      value: summary ? fmtPnl(summary.realizedPnl) : '—',
+      value: summary ? fmtPnl(summary.realizedPnl) : null,
       cls:   summary ? pnlClass(summary.realizedPnl) : '',
+      live:  false,
     },
     {
       label: 'Total Volume',
-      value: summary ? fmtUsdc(summary.totalVolume) : '—',
+      value: summary ? fmtUsdc(summary.totalVolume) : null,
       cls:   '',
+      live:  false,
     },
     {
       label: 'Deposits',
-      value: summary ? fmtUsdc(summary.totalDeposits) : '—',
+      value: summary ? fmtUsdc(summary.totalDeposits) : null,
       cls:   '',
+      live:  false,
     },
     {
       label: 'Withdrawals',
-      value: summary ? fmtUsdc(summary.totalWithdrawals) : '—',
+      value: summary ? fmtUsdc(summary.totalWithdrawals) : null,
       cls:   '',
+      live:  false,
     },
   ]
 
@@ -63,26 +70,31 @@ export function PortfolioSummary({ positions, prices, summary, historyLoading })
     }}>
       <div style={{
         fontSize: 11, fontWeight: 700, color: 'var(--text-3)',
-        textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 14,
+        textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 16,
       }}>
         Portfolio Summary
       </div>
       <div style={{
         display: 'grid',
         gridTemplateColumns: 'repeat(3, 1fr)',
-        gap: 12,
+        gap: '14px 12px',
       }}>
-        {stats.map((s) => (
-          <div key={s.label}>
-            <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 4 }}>{s.label}</div>
-            <div className={`mono ${s.cls}`} style={{ fontSize: 14, fontWeight: 700 }}>
-              {historyLoading && !summary && s.label !== 'Open Positions' && s.label !== 'Unrealized PnL'
-                ? <span style={{ color: 'var(--text-4)' }}>…</span>
-                : s.value
-              }
+        {stats.map((s) => {
+          const isLoading = !s.live && historyLoading && s.value == null
+          const displayValue = s.value ?? '—'
+          return (
+            <div key={s.label}>
+              <div className="stat-label" style={{ marginBottom: 5 }}>{s.label}</div>
+              {isLoading ? (
+                <div className="skeleton" style={{ height: 16, width: 56, borderRadius: 4 }} />
+              ) : (
+                <div className={`mono ${s.cls}`} style={{ fontSize: 14, fontWeight: 700 }}>
+                  {displayValue}
+                </div>
+              )}
             </div>
-          </div>
-        ))}
+          )
+        })}
       </div>
     </div>
   )

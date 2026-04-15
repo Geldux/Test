@@ -220,10 +220,10 @@ export function DesktopPositionsPanel({
       </div>
 
       {/* Content */}
-      <div style={{ overflowX: 'auto', overflowY: 'auto', maxHeight: 260 }}>
+      <div style={{ overflowX: 'auto', overflowY: 'auto', flex: 1, maxHeight: 300 }}>
         {tab === 'positions' && (
           loading
-            ? <div className="empty-state">Loading…</div>
+            ? <div className="loading-state"><span className="spinner" /><span>Loading positions…</span></div>
             : positions.length === 0
               ? <Empty msg="No open positions" />
               : (
@@ -338,11 +338,11 @@ export function MobilePositionsList({ positions, prices, loading, onClose, onSlT
   const [sheet,    setSheet]    = useState(null)
 
   if (loading && !positions.length) {
-    return <div className="empty-state">Loading positions…</div>
+    return <div className="loading-state"><span className="spinner" /><span>Loading positions…</span></div>
   }
 
   return (
-    <div style={{ padding: '12px 12px 0' }}>
+    <div style={{ padding: '12px 12px 20px' }}>
       {positions.length === 0 && <Empty msg="No open positions" />}
       {positions.map((pos) => {
         const sym  = symFromKey(pos.assetKey)
@@ -425,7 +425,7 @@ export function MobilePositionsList({ positions, prices, loading, onClose, onSlT
 export function MobileOrdersList({ orders, onCancelOrder, pending }) {
   if (!orders.length) return <Empty msg="No open orders" />
   return (
-    <div style={{ padding: '12px 12px 0' }}>
+    <div style={{ padding: '12px 12px 20px' }}>
       {orders.map((o) => {
         const sym = symFromKey(o.assetKey)
         return (

@@ -264,7 +264,7 @@ export default function App() {
             <DesktopMarketStats sym={sym} prices={prices} oi={oi} funding={funding} />
 
             {/* Chart area */}
-            <div className="chart-area" style={{ display: 'block', padding: 0, position: 'relative' }}>
+            <div className="chart-area">
               <PriceChart sym={sym} prices={prices} isDark={isDark} />
             </div>
 
@@ -441,7 +441,7 @@ export default function App() {
 
             {/* Chart */}
             <div style={{
-              margin: '0 12px 12px', height: 200,
+              margin: '0 12px 12px', height: 240,
               border: '1px solid var(--border)',
               borderRadius: 'var(--r)', overflow: 'hidden',
               position: 'relative',
@@ -461,7 +461,7 @@ export default function App() {
               </div>
             </div>
 
-            <div style={{ margin: '0 12px 24px' }}>
+            <div style={{ margin: '0 12px 40px' }}>
               {page === 'spot' ? (
                 <SpotPanel prices={prices} account={account} onConnect={connect} isConnecting={isConnecting} />
               ) : (
@@ -516,7 +516,7 @@ export default function App() {
             </div>
 
             {portfolioTab === 'overview' && (
-              <div style={{ padding: '12px' }}>
+              <div style={{ padding: '12px 12px 32px' }}>
                 {/* Points */}
                 <div className="card card-p" style={{ marginBottom: 12 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
@@ -583,7 +583,7 @@ export default function App() {
             )}
 
             {portfolioTab === 'history' && (
-              <div style={{ padding: '0 12px 12px' }}>
+              <div style={{ padding: '8px 12px 28px' }}>
                 <HistoryPanel
                   entries={histEntries} loading={histLoading}
                   account={account} reload={histReload}

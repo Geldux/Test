@@ -187,6 +187,18 @@ export function HistoryPanel({ entries, loading, account, reload }) {
         </button>
       </div>
 
+      {/* Progressive load indicator — shown while older batches are still fetching */}
+      {loading && entries.length > 0 && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 8, padding: '10px 0',
+          borderBottom: '1px solid var(--border)',
+          fontSize: 12, color: 'var(--text-3)',
+        }}>
+          <span className="spinner" style={{ width: 12, height: 12 }} />
+          Fetching older history…
+        </div>
+      )}
+
       {/* Entry list */}
       <div>
         {(!account || (!loading && entries.length === 0)) ? (
