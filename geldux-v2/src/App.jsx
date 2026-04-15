@@ -22,6 +22,7 @@ import { MobileNav }        from '@/components/MobileNav'
 import { PointsModal }      from '@/components/PointsModal'
 import { HistoryPanel }     from '@/components/HistoryPanel'
 import { PortfolioSummary } from '@/components/PortfolioSummary'
+import { PriceChart }       from '@/components/PriceChart'
 
 /* ── helpers ────────────────────────────────────────────────────── */
 function th(h) { return h ? h.slice(0, 10) + '…' : '' }
@@ -263,11 +264,8 @@ export default function App() {
             <DesktopMarketStats sym={sym} prices={prices} oi={oi} funding={funding} />
 
             {/* Chart area */}
-            <div className="chart-area">
-              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.2">
-                <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
-              </svg>
-              <span>Chart integration coming soon</span>
+            <div className="chart-area" style={{ display: 'block', padding: 0, position: 'relative' }}>
+              <PriceChart sym={sym} prices={prices} isDark={isDark} />
             </div>
 
             {/* Bottom positions panel */}
@@ -441,18 +439,14 @@ export default function App() {
           <>
             <MobileMarketStats sym={sym} prices={prices} oi={oi} funding={funding} />
 
-            {/* Chart placeholder */}
+            {/* Chart */}
             <div style={{
-              margin: '0 12px 12px', height: 140,
-              background: 'var(--surface)', border: '1px solid var(--border)',
-              borderRadius: 'var(--r)',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              flexDirection: 'column', gap: 6, color: 'var(--text-4)', fontSize: 12,
+              margin: '0 12px 12px', height: 200,
+              border: '1px solid var(--border)',
+              borderRadius: 'var(--r)', overflow: 'hidden',
+              position: 'relative',
             }}>
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.4">
-                <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
-              </svg>
-              Chart coming soon
+              <PriceChart sym={sym} prices={prices} isDark={isDark} />
             </div>
 
             {/* Perp / Spot tabs */}
