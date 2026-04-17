@@ -2,18 +2,24 @@ import { truncAddr } from '@/utils/format'
 
 /* ── Logo mark ──────────────────────────────────────────────────── */
 function LogoMark({ size = 28 }) {
+  const r = Math.round(size * 0.22)
   return (
-    <svg width={size} height={size} viewBox="0 0 32 32" fill="none">
-      <path d="M16 2L28 9V23L16 30L4 23V9L16 2Z" fill="url(#gg)" />
-      <path d="M16 2L28 9V23L16 30L4 23V9L16 2Z" fill="none" stroke="rgba(255,255,255,0.15)" strokeWidth="0.5" />
-      <path d="M17.5 12H13.5C12.67 12 12 12.67 12 13.5V18.5C12 19.33 12.67 20 13.5 20H17.5V16.5H15.5V15H19V20H13.5C11.84 20 10.5 18.66 10.5 17V15C10.5 13.34 11.84 12 13.5 12H17.5V13.5" fill="white" fillOpacity="0.95" />
-      <defs>
-        <linearGradient id="gg" x1="4" y1="2" x2="28" y2="30" gradientUnits="userSpaceOnUse">
-          <stop stopColor="#00c805" />
-          <stop offset="1" stopColor="#00a004" />
-        </linearGradient>
-      </defs>
-    </svg>
+    <div style={{
+      width: size, height: size,
+      borderRadius: r,
+      overflow: 'hidden',
+      flexShrink: 0,
+      background: '#050d1a',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+    }}>
+      <img
+        src="/logo.png"
+        alt="Geldux"
+        width={size}
+        height={size}
+        style={{ display: 'block', width: '100%', height: '100%', objectFit: 'cover' }}
+      />
+    </div>
   )
 }
 
