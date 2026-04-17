@@ -4,12 +4,11 @@ import { truncAddr } from '@/utils/format'
 function LogoMark({ size = 28 }) {
   const r = Math.round(size * 0.22)
   return (
-    <div style={{
+    <div className="logo-mark" style={{
       width: size, height: size,
       borderRadius: r,
       overflow: 'hidden',
       flexShrink: 0,
-      background: '#050d1a',
       display: 'flex', alignItems: 'center', justifyContent: 'center',
     }}>
       <img
