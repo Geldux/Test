@@ -27,7 +27,8 @@
  *
  * Loading:
  *   Progressive: results published after each BATCH_BLOCKS window so the UI
- *   shows data as it arrives.  Hard cap at MAX_LOOKBACK (~2.3 days).
+ *   shows data as it arrives.  Hard cap varies: ~11.6 days with Alchemy history
+ *   RPC (VITE_ALCHEMY_HISTORY_RPC), ~2.3 days on public RPCs.
  */
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { Contract } from 'ethers'
@@ -35,14 +36,16 @@ import {
   ADDRESSES, ABI_PERP_CORE, ABI_CROSS_MARGIN, ABI_ORDER_MANAGER,
 } from '@/config/contracts'
 import { MARKETS } from '@/config/markets'
-import { getReadProvider } from './useWallet'
+import { getHistoryProvider } from './useWallet'
+import { HAS_ALCHEMY_HISTORY } from '@/config/chain'
 
 export const BASESCAN_TX = 'https://sepolia.basescan.org/tx/'
 
-const CHUNK_SIZE   = 1_000    /* blocks per eth_getLogs call — safe on all public RPCs */
+const CHUNK_SIZE   = 1_000    /* blocks per eth_getLogs call — safe on all RPCs */
 const CONCURRENCY  = 1        /* sequential chunks per event type — prevents rate-limiting */
-const BATCH_BLOCKS = 20_000   /* blocks per progressive pass (~11 h at 2 s/block) */
-const MAX_LOOKBACK = 100_000  /* hard cap (~2.3 days; 5 batches of 20k) */
+/* Larger batches and deeper lookback when a dedicated Alchemy history RPC is present. */
+const BATCH_BLOCKS = HAS_ALCHEMY_HISTORY ? 50_000  : 20_000
+const MAX_LOOKBACK = HAS_ALCHEMY_HISTORY ? 500_000 : 100_000
 
 /**
  * Fetch all events in [fromBlock, toBlock] using sequential CHUNK_SIZE slices.
@@ -252,9 +255,9 @@ export function useHistory(account) {
 
   const load = useCallback(async () => {
     if (!account) { setEntries([]); setSummary(null); setError(null); return }
-    const rp = getReadProvider()
+    const rp = getHistoryProvider()
     if (!rp) {
-      console.error('[useHistory] no read provider — check RPC config')
+      console.error('[useHistory] no history provider — check RPC config')
       setError('No RPC provider available. Check network configuration.')
       return
     }
@@ -268,7 +271,7 @@ export function useHistory(account) {
       const currentBlock = await rp.getBlockNumber()
       const limitBlock   = Math.max(0, currentBlock - MAX_LOOKBACK)
 
-      console.log(`[useHistory] scanning blocks ${limitBlock}–${currentBlock} for ${account.slice(0, 8)}…`)
+      if (import.meta.env.DEV) console.log(`[useHistory] scanning blocks ${limitBlock}–${currentBlock} for ${account.slice(0, 8)}… (history RPC: ${HAS_ALCHEMY_HISTORY})`)
 
       const core     = new Contract(ADDRESSES.PERP_CORE,     ABI_PERP_CORE,     rp)
       const cross    = new Contract(ADDRESSES.CROSS_MARGIN,  ABI_CROSS_MARGIN,  rp)
@@ -289,7 +292,7 @@ export function useHistory(account) {
         const fromBlock = Math.max(limitBlock, toBlock - BATCH_BLOCKS + 1)
         batchIndex++
 
-        console.log(`[useHistory] batch ${batchIndex}: blocks ${fromBlock}–${toBlock}`)
+        if (import.meta.env.DEV) console.log(`[useHistory] batch ${batchIndex}: blocks ${fromBlock}–${toBlock}`)
 
         /* 9 event types in parallel; each type queries its chunks sequentially.
          * Peak concurrency = 9 simultaneous eth_getLogs calls — safe on all RPCs. */
@@ -312,24 +315,17 @@ export function useHistory(account) {
 
         if (!mountedRef.current) return
 
-        /* Diagnostic: first batch shows whether queries are reaching the chain */
         if (batchIndex === 1) {
-          console.log('[useHistory] first batch results:', {
-            opened: opened.length,
-            closedAll: closedAll.length,
-            deposited: deposited.length,
-            withdrawn: withdrawn.length,
-            xOpened: xOpened.length,
-            xClosed: xClosed.length,
+          if (import.meta.env.DEV) console.log('[useHistory] first batch results:', {
+            opened: opened.length, closedAll: closedAll.length,
+            deposited: deposited.length, xOpened: xOpened.length,
             ordersCreated: ordersCreated.length,
           })
           const total = opened.length + deposited.length + xOpened.length + ordersCreated.length
           if (total === 0) {
             console.warn(
-              '[useHistory] zero events found in first batch.\n' +
-              '  — If you have traded, this likely means the RPC is rate-limiting.\n' +
-              '  — Set VITE_ALCHEMY_API_KEY in .env.local to use Alchemy instead of public nodes.\n' +
-              `  — RPC in use: ${rp?._getConnection?.()?.url ?? '(unknown)'}`
+              '[useHistory] zero events in first batch — possible rate-limit on public RPC.\n' +
+              '  Set VITE_ALCHEMY_HISTORY_RPC in .env.local for dedicated event queries.'
             )
           }
         }

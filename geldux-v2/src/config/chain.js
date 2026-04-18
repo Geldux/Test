@@ -1,36 +1,50 @@
 export const CHAIN_ID  = 84532
 export const CHAIN_HEX = '0x14a34'
 
-const ALCHEMY_KEY = import.meta.env.VITE_ALCHEMY_API_KEY ?? ''
+const _READ_RAW    = import.meta.env.VITE_ALCHEMY_READ_RPC    ?? ''
+const _HISTORY_RAW = import.meta.env.VITE_ALCHEMY_HISTORY_RPC ?? ''
 
-/* Guard: if VITE_ALCHEMY_API_KEY was set to a full URL instead of just the
-   API key portion, use it directly rather than prepending the base URL again.
-   Without this, setting the env var to the full https://...alchemy.com/v2/<key>
-   produces the malformed double-URL "https://.../v2/https://..." which causes
-   CORS failures and ERR_FAILED on every RPC call. */
-function _buildAlchemyRpc() {
-  if (!ALCHEMY_KEY) return null
-  if (ALCHEMY_KEY.startsWith('https://') || ALCHEMY_KEY.startsWith('http://'))
-    return ALCHEMY_KEY
-  return `https://base-sepolia.g.alchemy.com/v2/${ALCHEMY_KEY}`
+/* Accept a full HTTPS URL or a bare API key (bare key → build URL).
+   Guards against the double-URL pattern that produces malformed RPC addresses. */
+function _sanitise(raw) {
+  if (!raw) return null
+  if (raw.startsWith('https://') || raw.startsWith('http://')) return raw
+  return `https://base-sepolia.g.alchemy.com/v2/${raw}`
 }
 
-export const ALCHEMY_RPC = _buildAlchemyRpc()
-export const ALCHEMY_WS  = ALCHEMY_RPC ? ALCHEMY_RPC.replace(/^https?:\/\//, 'wss://') : null
+const ALCHEMY_READ_RPC    = _sanitise(_READ_RAW)
+const ALCHEMY_HISTORY_RPC = _sanitise(_HISTORY_RAW)
 
-export const RPC_LIST = [
-  ALCHEMY_RPC,
+/* True when a dedicated history/event RPC is configured — enables larger lookback. */
+export const HAS_ALCHEMY_HISTORY = Boolean(ALCHEMY_HISTORY_RPC)
+
+const _PUBLIC = [
   'https://sepolia.base.org',
   'https://base-sepolia-rpc.publicnode.com',
+]
+
+/* Normal reads: prefer read RPC → history RPC → public fallbacks */
+export const READ_RPC_LIST = [
+  ALCHEMY_READ_RPC,
+  ALCHEMY_HISTORY_RPC,
+  ..._PUBLIC,
 ].filter(Boolean)
+
+/* History / event queries: prefer history RPC → read RPC → public fallbacks */
+export const HISTORY_RPC_LIST = [
+  ALCHEMY_HISTORY_RPC,
+  ALCHEMY_READ_RPC,
+  ..._PUBLIC,
+].filter(Boolean)
+
+/* Backwards-compat alias — all existing imports of RPC_LIST continue to work. */
+export const RPC_LIST = READ_RPC_LIST
 
 export const HERMES_URL = 'https://hermes.pyth.network'
 export const EXPLORER   = 'https://sepolia.basescan.org'
 
-/* Filter RPC_LIST to valid URLs before passing to MetaMask wallet_addEthereumChain.
-   Excludes null entries, /undefined, /null, and any URL where the path itself
-   contains a protocol (double-URL pattern). */
-const _validRpcs = RPC_LIST.filter((u) => {
+/* Filter to URLs safe to pass to MetaMask wallet_addEthereumChain. */
+const _validRpcs = READ_RPC_LIST.filter((u) => {
   if (!u) return false
   if (u.endsWith('/undefined') || u.endsWith('/null')) return false
   if (/\/https?:\/\//.test(u)) return false

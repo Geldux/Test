@@ -1,40 +1,55 @@
 import { useState, useCallback, useEffect } from 'react'
 import { BrowserProvider, JsonRpcProvider } from 'ethers'
-import { CHAIN_ID, CHAIN_HEX, BASE_CHAIN_PARAMS, RPC_LIST } from '@/config/chain'
+import { CHAIN_ID, CHAIN_HEX, BASE_CHAIN_PARAMS, READ_RPC_LIST, HISTORY_RPC_LIST } from '@/config/chain'
 
 let _provider = null
 let _signer   = null
 let _account  = null
 let _readProv = null
+let _histProv = null
 
 export function getProvider()     { return _provider }
 export function getSigner()       { return _signer }
 export function getAccount()      { return _account }
+
 function _isValidRpcUrl(u) {
   if (!u) return false
   if (u.endsWith('/undefined') || u.endsWith('/null')) return false
-  /* Catch double-URL: env var was a full URL pasted into a field expecting only the key */
   if (/\/https?:\/\//.test(u)) return false
   return true
 }
 
-export function getReadProvider() {
-  if (_readProv) return _readProv
-  const tryList = RPC_LIST.filter(_isValidRpcUrl)
+function _makeProvider(list, label) {
+  const tryList = list.filter(_isValidRpcUrl)
   if (!tryList.length) {
-    console.error('[getReadProvider] no valid RPC URLs — check VITE_ALCHEMY_API_KEY in env')
+    console.error(`[${label}] no valid RPC URLs — check VITE_ALCHEMY_READ_RPC / VITE_ALCHEMY_HISTORY_RPC in env`)
     return null
   }
   for (const url of tryList) {
     try {
-      _readProv = new JsonRpcProvider(url)
-      /* Log once on first creation — mask key portion for security */
-      console.log('[getReadProvider] using:', url.replace(/\/v2\/[^/]+$/, '/v2/***').replace(/\/v2$/, '/v2/***'))
-      return _readProv
+      const prov = new JsonRpcProvider(url)
+      if (import.meta.env.DEV) {
+        console.log(`[${label}] using:`, url.replace(/\/v2\/[^/]+$/, '/v2/***'))
+      }
+      return prov
     } catch (_) {}
   }
-  console.error('[getReadProvider] FAILED — could not construct provider from:', tryList.map((u) => u.slice(0, 40) + '…'))
+  console.error(`[${label}] FAILED — could not construct provider from any URL`)
   return null
+}
+
+/* Provider for normal state/balance reads. */
+export function getReadProvider() {
+  if (_readProv) return _readProv
+  _readProv = _makeProvider(READ_RPC_LIST, 'getReadProvider')
+  return _readProv
+}
+
+/* Provider for history / eth_getLogs queries — uses dedicated history RPC when available. */
+export function getHistoryProvider() {
+  if (_histProv) return _histProv
+  _histProv = _makeProvider(HISTORY_RPC_LIST, 'getHistoryProvider')
+  return _histProv
 }
 
 async function ensureNetwork(provider) {
@@ -93,7 +108,7 @@ export function useWallet() {
   }, [])
 
   const disconnect = useCallback(() => {
-    _provider = null; _signer = null; _account = null; _readProv = null
+    _provider = null; _signer = null; _account = null; _readProv = null; _histProv = null
     setAccount(null); setChainOk(false)
   }, [])
 
