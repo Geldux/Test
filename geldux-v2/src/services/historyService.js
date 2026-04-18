@@ -1,4 +1,5 @@
 import { supabase, HAS_SUPABASE } from '@/lib/supabase'
+export { HAS_SUPABASE }
 import { EXPLORER } from '@/config/chain'
 
 export const BASESCAN_TX = `${EXPLORER}/tx/`
