@@ -275,6 +275,7 @@ export default function App() {
               loading={loading} pending={pending}
               onClose={handleClose} onSlTp={handleSlTp}
               onIncrease={handleIncrease} onCancelOrder={handleCancelOrder}
+              crossAccount={crossAccount}
             />
           </main>
 
@@ -480,9 +481,10 @@ export default function App() {
         {/* ── Positions tab ── */}
         {mobileTab === 'positions' && (
           <MobilePositionsList
-            positions={positions} prices={prices} loading={loading} pending={pending}
+            positions={positions} orders={orders} prices={prices} loading={loading} pending={pending}
             onClose={handleClose} onSlTp={handleSlTp}
             onIncrease={handleIncrease} onCancelOrder={handleCancelOrder}
+            crossAccount={crossAccount}
           />
         )}
 

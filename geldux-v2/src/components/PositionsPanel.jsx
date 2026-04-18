@@ -199,6 +199,7 @@ function Empty({ msg }) {
 export function DesktopPositionsPanel({
   positions, orders, prices, loading,
   onClose, onSlTp, onIncrease, onCancelOrder, pending,
+  crossAccount,
 }) {
   const [tab,   setTab]   = useState('positions')
   const [sheet, setSheet] = useState(null) /* {type, pos} */
@@ -230,25 +231,30 @@ export function DesktopPositionsPanel({
                 <table className="pos-table">
                   <thead>
                     <tr>
-                      <th>Market</th><th>Side</th><th>Size</th><th>Lev</th>
+                      <th>Market</th><th>Side</th><th>Size</th><th>Collateral</th><th>Lev</th>
                       <th>Entry</th><th>Mark</th><th>PnL</th><th>Liq.</th><th>Age</th><th></th>
                     </tr>
                   </thead>
                   <tbody>
                     {positions.map((pos) => {
-                      const sym  = symFromKey(pos.assetKey)
-                      const mark = prices[sym]?.price || prices[sym]?.mark || pos.entryPrice
-                      const pnl  = calcPnlUsd(pos.entryPrice, mark, pos.isLong, pos.size)
-                      const liq  = estLiqPrice(pos.entryPrice, pos.leverage, pos.isLong)
+                      const sym    = symFromKey(pos.assetKey)
+                      const mark   = prices[sym]?.price || prices[sym]?.mark || pos.entryPrice
+                      const pnl    = calcPnlUsd(pos.entryPrice, mark, pos.isLong, pos.size)
+                      const liq    = estLiqPrice(pos.entryPrice, pos.leverage, pos.isLong)
+                      const isCross = crossAccount?.posIds?.includes(pos.id)
                       return (
                         <tr key={pos.id}>
                           <td style={{ fontWeight: 700 }}>{sym}</td>
                           <td>
-                            <span className={`badge ${pos.isLong ? 'badge-long' : 'badge-short'}`}>
-                              {pos.isLong ? '▲ Long' : '▼ Short'}
-                            </span>
+                            <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                              <span className={`badge ${pos.isLong ? 'badge-long' : 'badge-short'}`}>
+                                {pos.isLong ? '▲ Long' : '▼ Short'}
+                              </span>
+                              {isCross && <span className="badge badge-neutral" style={{ fontSize: 9 }}>Cross</span>}
+                            </div>
                           </td>
                           <td className="mono">{fmtUsdc(pos.size)}</td>
+                          <td className="mono">{fmtUsdc(pos.collateral)}</td>
                           <td className="mono">{fmtLev(pos.leverage)}</td>
                           <td className="mono">{fmtPriceRaw(pos.entryPrice)}</td>
                           <td className="mono">{fmtPriceRaw(mark)}</td>
@@ -333,7 +339,7 @@ export function DesktopPositionsPanel({
 /* ─────────────────────────────────────────────────────────────────
    MOBILE POSITIONS LIST
 ───────────────────────────────────────────────────────────────── */
-export function MobilePositionsList({ positions, prices, loading, onClose, onSlTp, onIncrease, onCancelOrder, pending }) {
+export function MobilePositionsList({ positions, orders = [], prices, loading, onClose, onSlTp, onIncrease, onCancelOrder, pending, crossAccount }) {
   const [expanded, setExpanded] = useState(null)
   const [sheet,    setSheet]    = useState(null)
 
@@ -345,11 +351,14 @@ export function MobilePositionsList({ positions, prices, loading, onClose, onSlT
     <div style={{ padding: '12px 12px 20px' }}>
       {positions.length === 0 && <Empty msg="No open positions" />}
       {positions.map((pos) => {
-        const sym  = symFromKey(pos.assetKey)
-        const mark = prices[sym]?.price || prices[sym]?.mark || pos.entryPrice
-        const pnl  = calcPnlUsd(pos.entryPrice, mark, pos.isLong, pos.size)
-        const liq  = estLiqPrice(pos.entryPrice, pos.leverage, pos.isLong)
-        const open = expanded === pos.id
+        const sym     = symFromKey(pos.assetKey)
+        const mark    = prices[sym]?.price || prices[sym]?.mark || pos.entryPrice
+        const pnl     = calcPnlUsd(pos.entryPrice, mark, pos.isLong, pos.size)
+        const liq     = estLiqPrice(pos.entryPrice, pos.leverage, pos.isLong)
+        const open    = expanded === pos.id
+        const isCross = crossAccount?.posIds?.includes(pos.id)
+        const slOrder = orders.find((o) => o.posId === pos.id && o.orderType === 1)
+        const tpOrder = orders.find((o) => o.posId === pos.id && o.orderType === 2)
 
         return (
           <div key={pos.id} className="m-pos-card">
@@ -360,6 +369,7 @@ export function MobilePositionsList({ positions, prices, loading, onClose, onSlT
                   {pos.isLong ? '▲ Long' : '▼ Short'}
                 </span>
                 <span className="badge badge-neutral">{fmtLev(pos.leverage)}</span>
+                {isCross && <span className="badge badge-neutral" style={{ fontSize: 9 }}>Cross</span>}
               </div>
               <div style={{ textAlign: 'right' }}>
                 <div className={`mono ${pnlClass(pnl)}`} style={{ fontWeight: 700, fontSize: 14 }}>{fmtPnl(pnl)}</div>
@@ -381,6 +391,22 @@ export function MobilePositionsList({ positions, prices, loading, onClose, onSlT
                     <span className="mono">{v}</span>
                   </div>
                 ))}
+                {(slOrder || tpOrder) && (
+                  <div style={{ margin: '6px 0 2px', display: 'flex', gap: 10 }}>
+                    {slOrder && (
+                      <div className="m-pos-row" style={{ flex: 1 }}>
+                        <span style={{ color: 'var(--red)', fontSize: 11 }}>SL</span>
+                        <span className="mono neg" style={{ fontSize: 12 }}>{fmtPriceRaw(slOrder.triggerPrice)}</span>
+                      </div>
+                    )}
+                    {tpOrder && (
+                      <div className="m-pos-row" style={{ flex: 1 }}>
+                        <span style={{ color: 'var(--green)', fontSize: 11 }}>TP</span>
+                        <span className="mono pos" style={{ fontSize: 12 }}>{fmtPriceRaw(tpOrder.triggerPrice)}</span>
+                      </div>
+                    )}
+                  </div>
+                )}
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 6, marginTop: 4 }}>
                   <button className="btn btn-sm btn-surface" onClick={() => setSheet({ type: 'increase', pos })}>+ Add</button>
                   <button className="btn btn-sm btn-secondary" onClick={() => setSheet({ type: 'sl', pos })}>SL</button>

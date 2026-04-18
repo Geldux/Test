@@ -38,6 +38,12 @@ export function PortfolioSummary({ positions, prices, summary, historyLoading })
       live:  true,
     },
     {
+      label: 'Trades',
+      value: summary ? summary.tradeCount.toString() : null,
+      cls:   '',
+      live:  false,
+    },
+    {
       label: 'Realized PnL',
       value: summary ? fmtPnl(summary.realizedPnl) : null,
       cls:   summary ? pnlClass(summary.realizedPnl) : '',
@@ -52,12 +58,6 @@ export function PortfolioSummary({ positions, prices, summary, historyLoading })
     {
       label: 'Deposits',
       value: summary ? fmtUsdc(summary.totalDeposits) : null,
-      cls:   '',
-      live:  false,
-    },
-    {
-      label: 'Withdrawals',
-      value: summary ? fmtUsdc(summary.totalWithdrawals) : null,
       cls:   '',
       live:  false,
     },
