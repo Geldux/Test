@@ -29,7 +29,7 @@ import {
 } from '@/config/contracts'
 import { MARKETS } from '@/config/markets'
 import { getHistoryProvider } from './useWallet'
-import { HAS_ALCHEMY_HISTORY } from '@/config/chain'
+import { HAS_ALCHEMY_HISTORY, HISTORY_RPC_LIST } from '@/config/chain'
 import {
   HAS_SUPABASE, readFromSupabase, writeToSupabase, buildSummaryFromEntries,
 } from '@/services/historyService'
@@ -230,10 +230,12 @@ function mergeEntries(cached, fresh) {
   return out
 }
 
-function friendlyRpcError(msg) {
+function friendlyRpcError(msg, hasDedicatedRpc) {
   if (!msg) return 'History unavailable — check network connection.'
   if (/rate.?limit|429|too many/i.test(msg))
-    return 'RPC rate limit reached. Try again, or set VITE_PRIMARY_RPC in .env.local.'
+    return hasDedicatedRpc
+      ? 'Dedicated RPC rate limit reached — check your API plan limits and try again.'
+      : 'Public RPC rate limited. Add VITE_PRIMARY_RPC to your Vercel environment variables and redeploy.'
   if (/could not detect|econnrefused|network/i.test(msg))
     return 'Network error — check your connection or RPC configuration.'
   if (/timeout|etimedout/i.test(msg))
@@ -264,10 +266,11 @@ export function useHistory(account) {
       return
     }
 
+    const _rpcHint = (HISTORY_RPC_LIST[0] ?? 'none').replace(/\/v2\/[^/?#]+/, '/v2/***')
     console.log(
       `[useHistory] starting load for ${account.slice(0, 8)}… | ` +
       `Supabase: ${HAS_SUPABASE} | dedicated RPC: ${HAS_ALCHEMY_HISTORY} | ` +
-      `MAX_LOOKBACK: ${MAX_LOOKBACK.toLocaleString()} blocks`
+      `RPC[0]: ${_rpcHint} | MAX_LOOKBACK: ${MAX_LOOKBACK.toLocaleString()} blocks`
     )
 
     setEntries([])
@@ -400,8 +403,8 @@ export function useHistory(account) {
       }
 
     } catch (e) {
-      console.error('[useHistory] load failed:', e?.message ?? e)
-      if (mountedRef.current) setError(friendlyRpcError(e?.message))
+      console.error('[useHistory] load failed:', e?.message ?? e, '| dedicated RPC:', HAS_ALCHEMY_HISTORY)
+      if (mountedRef.current) setError(friendlyRpcError(e?.message, HAS_ALCHEMY_HISTORY))
     } finally {
       if (mountedRef.current) setLoading(false)
     }
