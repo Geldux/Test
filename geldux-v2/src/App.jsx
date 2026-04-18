@@ -496,10 +496,14 @@ export default function App() {
 
         {/* ── Portfolio tab ── */}
         {mobileTab === 'portfolio' && (
-          <div>
-            {/* Sub-tab bar — sticky so it stays visible when scrolling Overview */}
+          <div style={{
+            display: 'flex', flexDirection: 'column',
+            height: 'calc(100dvh - var(--header-h) - var(--chip-h) - var(--nav-h))',
+            overflow: 'hidden',
+          }}>
+            {/* Sub-tab bar — permanent, never scrolls */}
             <div style={{
-              position: 'sticky', top: 0, zIndex: 10,
+              flexShrink: 0,
               padding: '0 12px', background: 'var(--surface)',
               borderBottom: '1px solid var(--border)',
             }}>
@@ -515,6 +519,9 @@ export default function App() {
                 ))}
               </div>
             </div>
+
+            {/* Scrollable panel — independent of tab bar */}
+            <div style={{ flex: 1, overflowY: 'auto', WebkitOverflowScrolling: 'touch' }}>
 
             {portfolioTab === 'overview' && (
               <div style={{ padding: '12px 12px 32px' }}>
@@ -591,6 +598,8 @@ export default function App() {
                 />
               </div>
             )}
+
+            </div>{/* end scrollable panel */}
           </div>
         )}
       </div>
