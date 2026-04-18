@@ -264,6 +264,12 @@ export function useHistory(account) {
       return
     }
 
+    console.log(
+      `[useHistory] starting load for ${account.slice(0, 8)}… | ` +
+      `Supabase: ${HAS_SUPABASE} | dedicated RPC: ${HAS_ALCHEMY_HISTORY} | ` +
+      `MAX_LOOKBACK: ${MAX_LOOKBACK.toLocaleString()} blocks`
+    )
+
     setEntries([])
     setSummary(null)
     setError(null)
@@ -350,7 +356,7 @@ export function useHistory(account) {
 
         if (!mountedRef.current) return
 
-        if (batchIndex === 1 && !HAS_SUPABASE) {
+        if (batchIndex === 1) {
           if (import.meta.env.DEV) {
             console.log('[useHistory] first batch results:', {
               opened: opened.length, closedAll: closedAll.length,
@@ -387,7 +393,11 @@ export function useHistory(account) {
 
       /* Persist new on-chain events to Supabase (fire-and-forget) */
       const finalFresh = buildEntries(acc, currentBlock, posIdLookup)
-      if (finalFresh.length > 0) writeToSupabase(finalFresh, account)
+      if (finalFresh.length > 0) {
+        writeToSupabase(finalFresh, account)
+      } else {
+        console.warn('[useHistory] scan complete — 0 new events found; Supabase write skipped')
+      }
 
     } catch (e) {
       console.error('[useHistory] load failed:', e?.message ?? e)

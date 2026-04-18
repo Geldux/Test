@@ -100,8 +100,12 @@ export async function writeToSupabase(entries, wallet) {
     const { error } = await supabase
       .from('geldux_history')
       .upsert(rows, { onConflict: 'tx_hash,type,wallet', ignoreDuplicates: true })
-    if (error) console.warn('[historyService] Supabase write error:', error.message)
+    if (error) {
+      console.error('[historyService] Supabase write error:', error.message, error)
+    } else {
+      console.log(`[historyService] wrote ${rows.length} row(s) to Supabase for ${wallet.slice(0, 8)}…`)
+    }
   } catch (e) {
-    console.warn('[historyService] Supabase write failed:', e?.message ?? e)
+    console.error('[historyService] Supabase write failed:', e?.message ?? e)
   }
 }
