@@ -155,7 +155,7 @@ function EmptyState({ connected, loading, error }) {
   return (
     <div className="empty-state" style={{ padding: '40px 16px' }}>
       <span className="empty-icon">◎</span>
-      No history in the last ~2 days
+      No transaction history found
     </div>
   )
 }

@@ -1,34 +1,26 @@
 /**
  * useHistory — on-chain event history for the connected wallet.
  *
+ * Loading strategy:
+ *   1. If Supabase is configured, read cached rows and display them immediately.
+ *   2. Scan only the block range newer than the latest cached block (incremental).
+ *   3. Persist new on-chain events back to Supabase (fire-and-forget).
+ *   4. Without Supabase, full on-chain scan up to MAX_LOOKBACK.
+ *
  * Perp / futures coverage:
- *   PerpCore.Opened           — isolated open
- *   PerpCore.Closed           — isolated close (matched to user via posId)
- *   CrossMargin.Deposited     — cross margin deposit
- *   CrossMargin.Withdrawn     — cross margin withdrawal
- *   CrossMargin.PositionOpened  — cross open
- *   CrossMargin.PositionClosed  — cross close (payout stored as amount)
+ *   PerpCore.Opened               — isolated open
+ *   PerpCore.Closed               — isolated close (matched via posId)
+ *   CrossMargin.Deposited         — cross margin deposit
+ *   CrossMargin.Withdrawn         — cross margin withdrawal
+ *   CrossMargin.PositionOpened    — cross open
+ *   CrossMargin.PositionClosed    — cross close
  *   CrossMargin.PositionIncreased — cross collateral add
- *   OrderManager.OrderCreated   — limit / SL / TP placed
- *   OrderManager.OrderCancelled — order cancelled
+ *   OrderManager.OrderCreated     — limit / SL / TP placed
+ *   OrderManager.OrderCancelled   — order cancelled
  *
  * NOT trackable from events (contract limitation):
  *   PerpCore isolated increases — increaseWithPermitAndPriceUpdate emits no event.
  *   OrderExecuted               — indexes the keeper, not the trader.
- *
- * RPC notes:
- *   Public Base Sepolia nodes (sepolia.base.org, publicnode.com) allow ~10-20
- *   concurrent eth_getLogs calls before rate-limiting.  CONCURRENCY = 1 keeps
- *   within-type queries sequential; 9 event types run in parallel in Promise.all,
- *   giving at most 9 simultaneous requests — safe for all RPCs.
- *
- *   CHUNK_SIZE = 1 000 keeps individual block ranges within the limits of
- *   public nodes (most accept up to 2 000 but 1 000 is safe everywhere).
- *
- * Loading:
- *   Progressive: results published after each BATCH_BLOCKS window so the UI
- *   shows data as it arrives.  Hard cap varies: ~11.6 days with Alchemy history
- *   RPC (VITE_ALCHEMY_HISTORY_RPC), ~2.3 days on public RPCs.
  */
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { Contract } from 'ethers'
@@ -38,20 +30,17 @@ import {
 import { MARKETS } from '@/config/markets'
 import { getHistoryProvider } from './useWallet'
 import { HAS_ALCHEMY_HISTORY } from '@/config/chain'
+import {
+  HAS_SUPABASE, readFromSupabase, writeToSupabase, buildSummaryFromEntries,
+} from '@/services/historyService'
 
-export const BASESCAN_TX = 'https://sepolia.basescan.org/tx/'
+export { BASESCAN_TX } from '@/services/historyService'
 
-const CHUNK_SIZE   = 1_000    /* blocks per eth_getLogs call — safe on all RPCs */
-const CONCURRENCY  = 1        /* sequential chunks per event type — prevents rate-limiting */
-/* Larger batches and deeper lookback when a dedicated Alchemy history RPC is present. */
+const CHUNK_SIZE   = 1_000
+const CONCURRENCY  = 1
 const BATCH_BLOCKS = HAS_ALCHEMY_HISTORY ? 50_000  : 20_000
 const MAX_LOOKBACK = HAS_ALCHEMY_HISTORY ? 500_000 : 100_000
 
-/**
- * Fetch all events in [fromBlock, toBlock] using sequential CHUNK_SIZE slices.
- * CONCURRENCY=1 means one request at a time per event type, preventing
- * rate-limit failures on public RPCs.  Chunk failures are logged and skipped.
- */
 async function queryChunked(contract, filter, fromBlock, toBlock, label) {
   const out = []
   let failCount = 0
@@ -89,21 +78,27 @@ function estimateTs(blockNumber, currentBlock) {
   return Math.floor(Date.now() / 1000) - (currentBlock - blockNumber) * 2
 }
 
-/** Build the unified sorted entry list from all accumulated event sets. */
-function buildEntries(acc, currentBlock) {
+/**
+ * Build normalized entry objects from raw event accumulator.
+ * posIdLookup resolves close events whose matching open lives in the
+ * Supabase cache rather than the current scan window.
+ *   posIdLookup shape: { [posId]: { sym, isLong, leverage, collateral } }
+ */
+function buildEntries(acc, currentBlock, posIdLookup = {}) {
   const {
     opened, closedAll, deposited, withdrawn,
     xOpened, xClosed, xIncreased,
     ordersCreated, ordersCancelled,
   } = acc
 
-  /* Closed events have no owner — match against this user's known posIds */
-  const userPosIds = new Set(opened.map((e) => e.args.posId.toString()))
+  const userPosIds = new Set([
+    ...opened.map((e) => e.args.posId.toString()),
+    ...Object.keys(posIdLookup),
+  ])
   const closedMine = closedAll.filter((e) => userPosIds.has(e.args.posId.toString()))
 
   const all = []
 
-  /* Isolated opens */
   opened.forEach((e) => {
     const { posId, key, isLong, leverage, collateral } = e.args
     const col = Number(collateral) / 1e18
@@ -116,26 +111,26 @@ function buildEntries(acc, currentBlock) {
     })
   })
 
-  /* Isolated closes */
   closedMine.forEach((e) => {
     const { posId, pnl } = e.args
-    const matched = opened.find((o) => o.args.posId.toString() === posId.toString())
+    const posIdStr  = posId.toString()
+    const fromAcc   = opened.find((o) => o.args.posId.toString() === posIdStr)
+    const fromCache = posIdLookup[posIdStr]
     all.push({
       type: 'close', hash: e.transactionHash,
       blockNumber: e.blockNumber, ts: estimateTs(e.blockNumber, currentBlock),
-      sym:        matched ? symFromKey(matched.args.key) : '?',
-      isLong:     matched ? matched.args.isLong : null,
-      posId:      posId.toString(),
-      leverage:   matched ? Number(matched.args.leverage) : null,
-      collateral: matched ? Number(matched.args.collateral) / 1e18 : null,
-      size:       matched
-        ? (Number(matched.args.collateral) / 1e18) * Number(matched.args.leverage)
-        : null,
+      sym:        fromAcc ? symFromKey(fromAcc.args.key)       : (fromCache?.sym        ?? '?'),
+      isLong:     fromAcc ? fromAcc.args.isLong                : (fromCache?.isLong     ?? null),
+      posId:      posIdStr,
+      leverage:   fromAcc ? Number(fromAcc.args.leverage)      : (fromCache?.leverage   ?? null),
+      collateral: fromAcc ? Number(fromAcc.args.collateral) / 1e18 : (fromCache?.collateral ?? null),
+      size: fromAcc
+        ? (Number(fromAcc.args.collateral) / 1e18) * Number(fromAcc.args.leverage)
+        : fromCache ? (fromCache.collateral ?? 0) * (fromCache.leverage ?? 1) : null,
       pnl: Number(pnl) / 1e18, amount: null, label: null,
     })
   })
 
-  /* Cross opens */
   xOpened.forEach((e) => {
     const { posId, key } = e.args
     all.push({
@@ -146,35 +141,37 @@ function buildEntries(acc, currentBlock) {
     })
   })
 
-  /* Cross closes — payout stored as amount */
+  /* xClosed and xIncreased filters already include account — no posId filter needed */
   xClosed.forEach((e) => {
     const { posId, payout } = e.args
-    const matched = xOpened.find((o) => o.args.posId.toString() === posId.toString())
+    const posIdStr  = posId.toString()
+    const fromAcc   = xOpened.find((o) => o.args.posId.toString() === posIdStr)
+    const fromCache = posIdLookup[posIdStr]
     all.push({
       type: 'cross_close', hash: e.transactionHash,
       blockNumber: e.blockNumber, ts: estimateTs(e.blockNumber, currentBlock),
-      sym:    matched ? symFromKey(matched.args.key) : '?',
-      isLong: null, posId: posId.toString(),
+      sym: fromAcc ? symFromKey(fromAcc.args.key) : (fromCache?.sym ?? '?'),
+      isLong: null, posId: posIdStr,
       leverage: null, collateral: null, size: null,
       pnl: null, amount: Number(payout) / 1e18, label: null,
     })
   })
 
-  /* Cross collateral adds */
   xIncreased.forEach((e) => {
     const { posId, extra } = e.args
-    const matched = xOpened.find((o) => o.args.posId.toString() === posId.toString())
+    const posIdStr  = posId.toString()
+    const fromAcc   = xOpened.find((o) => o.args.posId.toString() === posIdStr)
+    const fromCache = posIdLookup[posIdStr]
     all.push({
       type: 'cross_increase', hash: e.transactionHash,
       blockNumber: e.blockNumber, ts: estimateTs(e.blockNumber, currentBlock),
-      sym:    matched ? symFromKey(matched.args.key) : '?',
-      isLong: null, posId: posId.toString(),
+      sym: fromAcc ? symFromKey(fromAcc.args.key) : (fromCache?.sym ?? '?'),
+      isLong: null, posId: posIdStr,
       leverage: null, collateral: null, size: null,
       pnl: null, amount: Number(extra) / 1e18, label: null,
     })
   })
 
-  /* Cross deposits */
   deposited.forEach((e) => {
     all.push({
       type: 'deposit', hash: e.transactionHash,
@@ -185,7 +182,6 @@ function buildEntries(acc, currentBlock) {
     })
   })
 
-  /* Cross withdrawals */
   withdrawn.forEach((e) => {
     all.push({
       type: 'withdraw', hash: e.transactionHash,
@@ -196,7 +192,6 @@ function buildEntries(acc, currentBlock) {
     })
   })
 
-  /* Orders created */
   ordersCreated.forEach((e) => {
     const { id, t: orderType } = e.args
     all.push({
@@ -209,7 +204,6 @@ function buildEntries(acc, currentBlock) {
     })
   })
 
-  /* Orders cancelled */
   ordersCancelled.forEach((e) => {
     const { id } = e.args
     all.push({
@@ -225,20 +219,28 @@ function buildEntries(acc, currentBlock) {
   return all
 }
 
-function buildSummary(acc) {
-  const { opened, xOpened, closedAll, deposited, withdrawn, xClosed } = acc
-  const userPosIds = new Set(opened.map((e) => e.args.posId.toString()))
-  const closedMine = closedAll.filter((e) => userPosIds.has(e.args.posId.toString()))
-
-  return {
-    tradeCount:       opened.length + xOpened.length,
-    closedCount:      closedMine.length + xClosed.length,
-    realizedPnl:      closedMine.reduce((s, e) => s + Number(e.args.pnl) / 1e18, 0),
-    totalDeposits:    deposited.reduce((s, e) => s + Number(e.args.amt) / 1e18, 0),
-    totalWithdrawals: withdrawn.reduce((s, e) => s + Number(e.args.amt) / 1e18, 0),
-    totalVolume:      opened.reduce((s, e) =>
-      s + (Number(e.args.collateral) / 1e18) * Number(e.args.leverage), 0),
+/* Merge two blockNumber-desc sorted arrays, deduplicated by hash+type */
+function mergeEntries(cached, fresh) {
+  const seen = new Set(cached.map((e) => `${e.hash}|${e.type}`))
+  const out  = [...cached]
+  for (const e of fresh) {
+    if (!seen.has(`${e.hash}|${e.type}`)) out.push(e)
   }
+  out.sort((a, b) => b.blockNumber - a.blockNumber)
+  return out
+}
+
+function friendlyRpcError(msg) {
+  if (!msg) return 'History unavailable — check network connection.'
+  if (/rate.?limit|429|too many/i.test(msg))
+    return 'RPC rate limit reached. Try again, or set VITE_PRIMARY_RPC in .env.local.'
+  if (/could not detect|econnrefused|network/i.test(msg))
+    return 'Network error — check your connection or RPC configuration.'
+  if (/timeout|etimedout/i.test(msg))
+    return 'RPC request timed out. Check your connection and try again.'
+  if (/missing response|server error/i.test(msg))
+    return 'RPC server error. Try again or switch to a different provider.'
+  return 'History load failed — check browser console for details.'
 }
 
 export function useHistory(account) {
@@ -246,7 +248,7 @@ export function useHistory(account) {
   const [summary, setSummary] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error,   setError]   = useState(null)
-  const mountedRef            = useRef(true)
+  const mountedRef             = useRef(true)
 
   useEffect(() => {
     mountedRef.current = true
@@ -255,10 +257,10 @@ export function useHistory(account) {
 
   const load = useCallback(async () => {
     if (!account) { setEntries([]); setSummary(null); setError(null); return }
+
     const rp = getHistoryProvider()
     if (!rp) {
-      console.error('[useHistory] no history provider — check RPC config')
-      setError('No RPC provider available. Check network configuration.')
+      setError('No RPC provider — set VITE_PRIMARY_RPC in .env.local.')
       return
     }
 
@@ -269,9 +271,42 @@ export function useHistory(account) {
 
     try {
       const currentBlock = await rp.getBlockNumber()
-      const limitBlock   = Math.max(0, currentBlock - MAX_LOOKBACK)
 
-      if (import.meta.env.DEV) console.log(`[useHistory] scanning blocks ${limitBlock}–${currentBlock} for ${account.slice(0, 8)}… (history RPC: ${HAS_ALCHEMY_HISTORY})`)
+      /* ── Fast path: serve Supabase-cached history immediately ───── */
+      let cachedEntries = []
+      let fromBlock     = Math.max(0, currentBlock - MAX_LOOKBACK)
+
+      if (HAS_SUPABASE) {
+        const cached = await readFromSupabase(account)
+        if (cached) {
+          cachedEntries = cached.entries
+          if (cachedEntries.length > 0 && mountedRef.current) {
+            setEntries(cachedEntries)
+            setSummary(buildSummaryFromEntries(cachedEntries))
+          }
+          /* Incremental scan — only fetch blocks newer than the cache */
+          if (cached.latestBlock > 0) fromBlock = cached.latestBlock + 1
+        }
+      }
+
+      if (!mountedRef.current) return
+
+      /* Build posId lookup so incremental closes can be enriched from cache */
+      const posIdLookup = {}
+      for (const e of cachedEntries) {
+        if ((e.type === 'open' || e.type === 'cross_open') && e.posId) {
+          posIdLookup[e.posId] = {
+            sym: e.sym, isLong: e.isLong, leverage: e.leverage, collateral: e.collateral,
+          }
+        }
+      }
+
+      if (import.meta.env.DEV) {
+        console.log(
+          `[useHistory] scanning ${fromBlock}–${currentBlock} for ${account.slice(0, 8)}…`,
+          `(Supabase: ${HAS_SUPABASE}, dedicated RPC: ${HAS_ALCHEMY_HISTORY})`
+        )
+      }
 
       const core     = new Contract(ADDRESSES.PERP_CORE,     ABI_PERP_CORE,     rp)
       const cross    = new Contract(ADDRESSES.CROSS_MARGIN,  ABI_CROSS_MARGIN,  rp)
@@ -286,46 +321,48 @@ export function useHistory(account) {
       let toBlock    = currentBlock
       let batchIndex = 0
 
-      while (toBlock > limitBlock) {
+      while (toBlock >= fromBlock) {
         if (!mountedRef.current) return
 
-        const fromBlock = Math.max(limitBlock, toBlock - BATCH_BLOCKS + 1)
+        const batchFrom = Math.max(fromBlock, toBlock - BATCH_BLOCKS + 1)
         batchIndex++
 
-        if (import.meta.env.DEV) console.log(`[useHistory] batch ${batchIndex}: blocks ${fromBlock}–${toBlock}`)
+        if (import.meta.env.DEV) {
+          console.log(`[useHistory] batch ${batchIndex}: blocks ${batchFrom}–${toBlock}`)
+        }
 
-        /* 9 event types in parallel; each type queries its chunks sequentially.
-         * Peak concurrency = 9 simultaneous eth_getLogs calls — safe on all RPCs. */
         const [
           opened, closedAll,
           deposited, withdrawn,
           xOpened, xClosed, xIncreased,
           ordersCreated, ordersCancelled,
         ] = await Promise.all([
-          queryChunked(core,     core.filters.Opened(null, account),              fromBlock, toBlock, 'Opened'),
-          queryChunked(core,     core.filters.Closed(),                            fromBlock, toBlock, 'Closed'),
-          queryChunked(cross,    cross.filters.Deposited(account),                fromBlock, toBlock, 'Deposited'),
-          queryChunked(cross,    cross.filters.Withdrawn(account),                fromBlock, toBlock, 'Withdrawn'),
-          queryChunked(cross,    cross.filters.PositionOpened(account),           fromBlock, toBlock, 'PositionOpened'),
-          queryChunked(cross,    cross.filters.PositionClosed(account),           fromBlock, toBlock, 'PositionClosed'),
-          queryChunked(cross,    cross.filters.PositionIncreased(account),        fromBlock, toBlock, 'PositionIncreased'),
-          queryChunked(orderMgr, orderMgr.filters.OrderCreated(null, account),   fromBlock, toBlock, 'OrderCreated'),
-          queryChunked(orderMgr, orderMgr.filters.OrderCancelled(null, account), fromBlock, toBlock, 'OrderCancelled'),
+          queryChunked(core,     core.filters.Opened(null, account),              batchFrom, toBlock, 'Opened'),
+          queryChunked(core,     core.filters.Closed(),                            batchFrom, toBlock, 'Closed'),
+          queryChunked(cross,    cross.filters.Deposited(account),                batchFrom, toBlock, 'Deposited'),
+          queryChunked(cross,    cross.filters.Withdrawn(account),                batchFrom, toBlock, 'Withdrawn'),
+          queryChunked(cross,    cross.filters.PositionOpened(account),           batchFrom, toBlock, 'PositionOpened'),
+          queryChunked(cross,    cross.filters.PositionClosed(account),           batchFrom, toBlock, 'PositionClosed'),
+          queryChunked(cross,    cross.filters.PositionIncreased(account),        batchFrom, toBlock, 'PositionIncreased'),
+          queryChunked(orderMgr, orderMgr.filters.OrderCreated(null, account),   batchFrom, toBlock, 'OrderCreated'),
+          queryChunked(orderMgr, orderMgr.filters.OrderCancelled(null, account), batchFrom, toBlock, 'OrderCancelled'),
         ])
 
         if (!mountedRef.current) return
 
-        if (batchIndex === 1) {
-          if (import.meta.env.DEV) console.log('[useHistory] first batch results:', {
-            opened: opened.length, closedAll: closedAll.length,
-            deposited: deposited.length, xOpened: xOpened.length,
-            ordersCreated: ordersCreated.length,
-          })
+        if (batchIndex === 1 && !HAS_SUPABASE) {
+          if (import.meta.env.DEV) {
+            console.log('[useHistory] first batch results:', {
+              opened: opened.length, closedAll: closedAll.length,
+              deposited: deposited.length, xOpened: xOpened.length,
+              ordersCreated: ordersCreated.length,
+            })
+          }
           const total = opened.length + deposited.length + xOpened.length + ordersCreated.length
           if (total === 0) {
             console.warn(
-              '[useHistory] zero events in first batch — possible rate-limit on public RPC.\n' +
-              '  Set VITE_ALCHEMY_HISTORY_RPC in .env.local for dedicated event queries.'
+              '[useHistory] zero events in first batch — possible rate-limit.\n' +
+              '  Set VITE_PRIMARY_RPC in .env.local for a dedicated RPC endpoint.'
             )
           }
         }
@@ -340,14 +377,21 @@ export function useHistory(account) {
         acc.ordersCreated.push(...ordersCreated)
         acc.ordersCancelled.push(...ordersCancelled)
 
-        setEntries(buildEntries(acc, currentBlock))
-        setSummary(buildSummary(acc))
+        /* Progressive display: rebuild from full accumulated acc after each batch */
+        const freshEntries = buildEntries(acc, currentBlock, posIdLookup)
+        setEntries(mergeEntries(cachedEntries, freshEntries))
+        setSummary(buildSummaryFromEntries(mergeEntries(cachedEntries, freshEntries)))
 
-        toBlock = fromBlock - 1
+        toBlock = batchFrom - 1
       }
+
+      /* Persist new on-chain events to Supabase (fire-and-forget) */
+      const finalFresh = buildEntries(acc, currentBlock, posIdLookup)
+      if (finalFresh.length > 0) writeToSupabase(finalFresh, account)
+
     } catch (e) {
       console.error('[useHistory] load failed:', e?.message ?? e)
-      if (mountedRef.current) setError(e?.message ?? 'History load failed — check console for details')
+      if (mountedRef.current) setError(friendlyRpcError(e?.message))
     } finally {
       if (mountedRef.current) setLoading(false)
     }

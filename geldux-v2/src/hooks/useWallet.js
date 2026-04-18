@@ -22,7 +22,7 @@ function _isValidRpcUrl(u) {
 function _makeProvider(list, label) {
   const tryList = list.filter(_isValidRpcUrl)
   if (!tryList.length) {
-    console.error(`[${label}] no valid RPC URLs — check VITE_ALCHEMY_READ_RPC / VITE_ALCHEMY_HISTORY_RPC in env`)
+    console.error(`[${label}] no valid RPC URLs — set VITE_PRIMARY_RPC / VITE_SECONDARY_RPC in .env.local`)
     return null
   }
   for (const url of tryList) {
@@ -97,10 +97,12 @@ export function useWallet() {
     } catch (e) {
       const msg = e?.message || 'Connection failed'
       setError(
-        msg.includes('No wallet')       ? 'No wallet found. Open in MetaMask browser.' :
-        msg.includes('Base Sepolia')    ? 'Please switch to Base Sepolia in MetaMask.' :
-        msg.includes('User rejected')   ? 'Connection rejected.' :
-        msg
+        msg.includes('No wallet')        ? 'No wallet found. Open in MetaMask browser.' :
+        msg.includes('Base Sepolia')     ? 'Please switch to Base Sepolia in MetaMask.' :
+        msg.includes('User rejected')    ? 'Connection rejected.' :
+        msg.includes('could not detect') ? 'Could not connect to network — check RPC.' :
+        msg.includes('network')          ? 'Network error — check your connection.' :
+        'Connection failed. Try again.'
       )
     } finally {
       setConnecting(false)
