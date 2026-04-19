@@ -486,24 +486,15 @@ export function useTrading({ onSuccess, onError } = {}) {
       console.log('  fn       : depositWithPermit(uint256 amt, uint256 deadline, uint8 v, bytes32 r, bytes32 s)')
       console.log('  args     : [amtRaw, deadline, v, r, s] — same for simulation and real tx')
 
-      /* Static simulation — { from: owner } so msg.sender = user, not address(0).
-         Without this, the permit ecrecover check fails → simulation blocks deposit.
-         Routed through read provider so MetaMask's RPC rate limit doesn't block it. */
-      setStep('Simulating deposit…')
-      const rpDep     = getReadProvider()
-      const crossDep  = rpDep ? new Contract(ADDRESSES.CROSS_MARGIN, ABI_CROSS_MARGIN, rpDep) : cross
-      try {
-        await crossDep.depositWithPermit.staticCall(amtRaw, deadline, v, r, s, { from: owner })
-        console.log('[crossDeposit] simulation PASSED ✓')
-      } catch (simErr) {
-        if (isInfraError(simErr)) {
-          console.warn('[crossDeposit] simulation skipped (provider throttled) — submitting anyway')
-        } else {
+      /* Non-blocking diagnostic simulation — never throws; tx is always submitted. */
+      const rpDep    = getReadProvider()
+      const crossDep = rpDep ? new Contract(ADDRESSES.CROSS_MARGIN, ABI_CROSS_MARGIN, rpDep) : cross
+      crossDep.depositWithPermit.staticCall(amtRaw, deadline, v, r, s, { from: owner })
+        .then(() => console.log('[crossDeposit] simulation PASSED ✓'))
+        .catch((simErr) => {
           const reason = decodeSimError(simErr)
-          console.error('[crossDeposit] SIMULATION FAILED:', reason, simErr)
-          throw new Error(String(reason).split(' (action=')[0].slice(0, 160))
-        }
-      }
+          console.warn('[crossDeposit] simulation diagnostic:', reason, simErr)
+        })
 
       console.log('[crossDeposit] ── SUBMITTING ──')
       console.log('  args: [amtRaw, deadline, v, r, s] (same as simulation — no divergence)')
@@ -588,26 +579,15 @@ export function useTrading({ onSuccess, onError } = {}) {
       console.log('  cRaw      :', cRaw.toString(), '(', collateralUsd, 'USDC)')
       console.log('  contract  :', ADDRESSES.CROSS_MARGIN)
 
-      /* Simulation — routed through dedicated JsonRpcProvider (not BrowserProvider)
-         so MetaMask's rate-limited RPC never blocks the pre-flight eth_call.
-         If the RPC itself is throttled, skip simulation rather than blocking the tx. */
-      setStep('Simulating…')
-      const rp      = getReadProvider()
+      /* Non-blocking diagnostic simulation — never throws; tx is always submitted. */
+      const rp       = getReadProvider()
       const crossSim = rp ? new Contract(ADDRESSES.CROSS_MARGIN, ABI_CROSS_MARGIN, rp) : cross
-      try {
-        await crossSim.openPosition.staticCall(
-          market.key, isLong, Number(leverage), cRaw, false, { from: owner }
-        )
-        console.log('[crossOpenPosition] simulation PASSED ✓')
-      } catch (simErr) {
-        if (isInfraError(simErr)) {
-          console.warn('[crossOpenPosition] simulation skipped (provider throttled) — submitting anyway')
-        } else {
+      crossSim.openPosition.staticCall(market.key, isLong, Number(leverage), cRaw, false, { from: owner })
+        .then(() => console.log('[crossOpenPosition] simulation PASSED ✓'))
+        .catch((simErr) => {
           const reason = decodeSimError(simErr)
-          console.error('[crossOpenPosition] SIMULATION FAILED:', reason, simErr)
-          throw new Error(String(reason).split(' (action=')[0].slice(0, 200))
-        }
-      }
+          console.warn('[crossOpenPosition] simulation diagnostic:', reason, simErr)
+        })
 
       setStep(`Submitting cross ${isLong ? 'Long' : 'Short'}…`)
       /* gasLimit skips eth_estimateGas; args must be identical to simulation above */
@@ -632,22 +612,15 @@ export function useTrading({ onSuccess, onError } = {}) {
       console.log('  fractionBps :', fractionBps, '(', (fractionBps / 100).toFixed(0), '%)')
       console.log('  contract    :', ADDRESSES.CROSS_MARGIN)
 
-      /* Simulation — dedicated JsonRpcProvider so BrowserProvider rate limits don't block pre-flight */
-      setStep('Simulating…')
-      const rp2      = getReadProvider()
+      /* Non-blocking diagnostic simulation — never throws; tx is always submitted. */
+      const rp2       = getReadProvider()
       const crossSim2 = rp2 ? new Contract(ADDRESSES.CROSS_MARGIN, ABI_CROSS_MARGIN, rp2) : cross
-      try {
-        await crossSim2.closePosition.staticCall(posId, fractionBps, { from: owner })
-        console.log('[crossClosePosition] simulation PASSED ✓')
-      } catch (simErr) {
-        if (isInfraError(simErr)) {
-          console.warn('[crossClosePosition] simulation skipped (provider throttled) — submitting anyway')
-        } else {
+      crossSim2.closePosition.staticCall(posId, fractionBps, { from: owner })
+        .then(() => console.log('[crossClosePosition] simulation PASSED ✓'))
+        .catch((simErr) => {
           const reason = decodeSimError(simErr)
-          console.error('[crossClosePosition] SIMULATION FAILED:', reason, simErr)
-          throw new Error(String(reason).split(' (action=')[0].slice(0, 200))
-        }
-      }
+          console.warn('[crossClosePosition] simulation diagnostic:', reason, simErr)
+        })
 
       setStep('Submitting close…')
       /* gasLimit skips eth_estimateGas; args identical to simulation */
