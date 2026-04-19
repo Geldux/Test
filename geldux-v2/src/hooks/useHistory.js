@@ -103,11 +103,11 @@ function buildEntries(acc, currentBlock, posIdLookup = {}) {
     const { posId, key, isLong, leverage, collateral } = e.args
     const col = Number(collateral) / 1e18
     all.push({
-      type: 'open', hash: e.transactionHash,
+      type: 'open', hash: e.transactionHash, status: 'confirmed', mode: 'isolated',
       blockNumber: e.blockNumber, ts: estimateTs(e.blockNumber, currentBlock),
       sym: symFromKey(key), isLong, posId: posId.toString(),
       leverage: Number(leverage), collateral: col, size: col * Number(leverage),
-      pnl: null, amount: null, label: null,
+      pnl: null, amount: null, label: null, entryPrice: null,
     })
   })
 
@@ -117,7 +117,7 @@ function buildEntries(acc, currentBlock, posIdLookup = {}) {
     const fromAcc   = opened.find((o) => o.args.posId.toString() === posIdStr)
     const fromCache = posIdLookup[posIdStr]
     all.push({
-      type: 'close', hash: e.transactionHash,
+      type: 'close', hash: e.transactionHash, status: 'confirmed', mode: 'isolated',
       blockNumber: e.blockNumber, ts: estimateTs(e.blockNumber, currentBlock),
       sym:        fromAcc ? symFromKey(fromAcc.args.key)       : (fromCache?.sym        ?? '?'),
       isLong:     fromAcc ? fromAcc.args.isLong                : (fromCache?.isLong     ?? null),
@@ -127,17 +127,17 @@ function buildEntries(acc, currentBlock, posIdLookup = {}) {
       size: fromAcc
         ? (Number(fromAcc.args.collateral) / 1e18) * Number(fromAcc.args.leverage)
         : fromCache ? (fromCache.collateral ?? 0) * (fromCache.leverage ?? 1) : null,
-      pnl: Number(pnl) / 1e18, amount: null, label: null,
+      pnl: Number(pnl) / 1e18, amount: null, label: null, entryPrice: null,
     })
   })
 
   xOpened.forEach((e) => {
     const { posId, key } = e.args
     all.push({
-      type: 'cross_open', hash: e.transactionHash,
+      type: 'cross_open', hash: e.transactionHash, status: 'confirmed', mode: 'cross',
       blockNumber: e.blockNumber, ts: estimateTs(e.blockNumber, currentBlock),
       sym: symFromKey(key), isLong: null, posId: posId.toString(),
-      leverage: null, collateral: null, size: null, pnl: null, amount: null, label: null,
+      leverage: null, collateral: null, size: null, pnl: null, amount: null, label: null, entryPrice: null,
     })
   })
 
@@ -148,12 +148,12 @@ function buildEntries(acc, currentBlock, posIdLookup = {}) {
     const fromAcc   = xOpened.find((o) => o.args.posId.toString() === posIdStr)
     const fromCache = posIdLookup[posIdStr]
     all.push({
-      type: 'cross_close', hash: e.transactionHash,
+      type: 'cross_close', hash: e.transactionHash, status: 'confirmed', mode: 'cross',
       blockNumber: e.blockNumber, ts: estimateTs(e.blockNumber, currentBlock),
       sym: fromAcc ? symFromKey(fromAcc.args.key) : (fromCache?.sym ?? '?'),
       isLong: null, posId: posIdStr,
       leverage: null, collateral: null, size: null,
-      pnl: null, amount: Number(payout) / 1e18, label: null,
+      pnl: null, amount: Number(payout) / 1e18, label: null, entryPrice: null,
     })
   })
 
@@ -163,55 +163,55 @@ function buildEntries(acc, currentBlock, posIdLookup = {}) {
     const fromAcc   = xOpened.find((o) => o.args.posId.toString() === posIdStr)
     const fromCache = posIdLookup[posIdStr]
     all.push({
-      type: 'cross_increase', hash: e.transactionHash,
+      type: 'cross_increase', hash: e.transactionHash, status: 'confirmed', mode: 'cross',
       blockNumber: e.blockNumber, ts: estimateTs(e.blockNumber, currentBlock),
       sym: fromAcc ? symFromKey(fromAcc.args.key) : (fromCache?.sym ?? '?'),
       isLong: null, posId: posIdStr,
       leverage: null, collateral: null, size: null,
-      pnl: null, amount: Number(extra) / 1e18, label: null,
+      pnl: null, amount: Number(extra) / 1e18, label: null, entryPrice: null,
     })
   })
 
   deposited.forEach((e) => {
     all.push({
-      type: 'deposit', hash: e.transactionHash,
+      type: 'deposit', hash: e.transactionHash, status: 'confirmed', mode: 'cross',
       blockNumber: e.blockNumber, ts: estimateTs(e.blockNumber, currentBlock),
       sym: '', isLong: null, posId: null,
       leverage: null, collateral: null, size: null,
-      pnl: null, amount: Number(e.args.amt) / 1e18, label: null,
+      pnl: null, amount: Number(e.args.amt) / 1e18, label: null, entryPrice: null,
     })
   })
 
   withdrawn.forEach((e) => {
     all.push({
-      type: 'withdraw', hash: e.transactionHash,
+      type: 'withdraw', hash: e.transactionHash, status: 'confirmed', mode: 'cross',
       blockNumber: e.blockNumber, ts: estimateTs(e.blockNumber, currentBlock),
       sym: '', isLong: null, posId: null,
       leverage: null, collateral: null, size: null,
-      pnl: null, amount: Number(e.args.amt) / 1e18, label: null,
+      pnl: null, amount: Number(e.args.amt) / 1e18, label: null, entryPrice: null,
     })
   })
 
   ordersCreated.forEach((e) => {
     const { id, t: orderType } = e.args
     all.push({
-      type: 'order_created', hash: e.transactionHash,
+      type: 'order_created', hash: e.transactionHash, status: 'confirmed', mode: null,
       blockNumber: e.blockNumber, ts: estimateTs(e.blockNumber, currentBlock),
       sym: '', isLong: null, posId: null,
       leverage: null, collateral: null, size: null,
       pnl: null, amount: null,
-      label: ORDER_TYPE_LABEL[Number(orderType)] ?? 'Order', orderId: Number(id),
+      label: ORDER_TYPE_LABEL[Number(orderType)] ?? 'Order', orderId: Number(id), entryPrice: null,
     })
   })
 
   ordersCancelled.forEach((e) => {
     const { id } = e.args
     all.push({
-      type: 'order_cancelled', hash: e.transactionHash,
+      type: 'order_cancelled', hash: e.transactionHash, status: 'confirmed', mode: null,
       blockNumber: e.blockNumber, ts: estimateTs(e.blockNumber, currentBlock),
       sym: '', isLong: null, posId: null,
       leverage: null, collateral: null, size: null,
-      pnl: null, amount: null, label: 'Order', orderId: Number(id),
+      pnl: null, amount: null, label: 'Order', orderId: Number(id), entryPrice: null,
     })
   })
 
@@ -219,14 +219,23 @@ function buildEntries(acc, currentBlock, posIdLookup = {}) {
   return all
 }
 
-/* Merge two blockNumber-desc sorted arrays, deduplicated by hash+type */
+/* Merge two sorted arrays, deduplicated by hash+type.
+   On conflict, fresh (confirmed) entry wins over cached (pending).
+   Pending entries (blockNumber=0) sort to top so they appear immediately. */
 function mergeEntries(cached, fresh) {
-  const seen = new Set(cached.map((e) => `${e.hash}|${e.type}`))
-  const out  = [...cached]
-  for (const e of fresh) {
-    if (!seen.has(`${e.hash}|${e.type}`)) out.push(e)
-  }
-  out.sort((a, b) => b.blockNumber - a.blockNumber)
+  const freshKeys = new Set(fresh.map((e) => `${e.hash}|${e.type}`))
+  const out = [
+    /* fresh entries always take priority */
+    ...fresh,
+    /* cached entries that fresh has NOT superseded */
+    ...cached.filter((e) => !freshKeys.has(`${e.hash}|${e.type}`)),
+  ]
+  out.sort((a, b) => {
+    const aPending = a.blockNumber === 0
+    const bPending = b.blockNumber === 0
+    if (aPending !== bPending) return aPending ? -1 : 1
+    return b.blockNumber - a.blockNumber
+  })
   return out
 }
 

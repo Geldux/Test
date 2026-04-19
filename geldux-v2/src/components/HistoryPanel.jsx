@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { fmtUsdc, fmtPnl, pnlClass } from '@/utils/format'
+import { fmtUsdc, fmtPnl, fmtPriceRaw, pnlClass } from '@/utils/format'
 import { BASESCAN_TX } from '@/hooks/useHistory'
 
 /* ── Helpers ─────────────────────────────────────────────────────── */
@@ -15,34 +15,43 @@ function relTime(ts) {
 
 /* ── Type configuration ──────────────────────────────────────────── */
 const TYPE_META = {
-  open:            { label: 'Opened',       badgeCls: 'badge-long',    dir: true  },
-  close:           { label: 'Closed',       badgeCls: 'badge-short',   dir: true  },
-  cross_open:      { label: 'Cross Open',   badgeCls: 'badge-long',    dir: false },
-  cross_increase:  { label: 'Cross Add',    badgeCls: 'badge-long',    dir: false },
-  cross_close:     { label: 'Cross Close',  badgeCls: 'badge-short',   dir: false },
-  deposit:         { label: 'Deposit',      badgeCls: 'badge-neutral', dir: false },
-  withdraw:        { label: 'Withdraw',     badgeCls: 'badge-neutral', dir: false },
-  order_created:   { label: 'Order',        badgeCls: 'badge-neutral', dir: false },
-  order_cancelled: { label: 'Cancelled',    badgeCls: 'badge-neutral', dir: false },
+  open:            { label: 'Opened',       badgeCls: 'badge-long'    },
+  close:           { label: 'Closed',       badgeCls: 'badge-short'   },
+  cross_open:      { label: 'Cross Open',   badgeCls: 'badge-long'    },
+  cross_increase:  { label: 'Cross Add',    badgeCls: 'badge-long'    },
+  cross_close:     { label: 'Cross Close',  badgeCls: 'badge-short'   },
+  deposit:         { label: 'Deposit',      badgeCls: 'badge-neutral' },
+  withdraw:        { label: 'Withdraw',     badgeCls: 'badge-neutral' },
+  order_created:   { label: 'Order',        badgeCls: 'badge-neutral' },
+  order_cancelled: { label: 'Cancelled',    badgeCls: 'badge-neutral' },
 }
 
 function entryDescription(e) {
   const dir = e.isLong === true ? 'Long' : e.isLong === false ? 'Short' : ''
   switch (e.type) {
-    case 'open':            return `${dir} ${e.sym}${e.leverage ? ` · ${e.leverage}×` : ''}`
-    case 'close':           return `${dir} ${e.sym}${e.leverage ? ` · ${e.leverage}×` : ''}`
+    case 'open':
+    case 'close': {
+      const parts = [dir, e.sym].filter(Boolean).join(' ')
+      const lev   = e.leverage ? ` · ${e.leverage}×` : ''
+      const mode  = e.mode === 'isolated' ? ' (isolated)' : ''
+      return parts + lev + mode
+    }
     case 'cross_open':      return `${e.sym} (cross)`
     case 'cross_increase':  return `${e.sym || '?'} (cross add)`
     case 'cross_close':     return `${e.sym} (cross)`
     case 'deposit':         return 'Cross Deposit'
     case 'withdraw':        return 'Cross Withdrawal'
-    case 'order_created':   return `${e.label ?? 'Order'} placed`
-    case 'order_cancelled': return `${e.label ?? 'Order'} cancelled`
+    case 'order_created':   return `${e.label ?? 'Order'} placed${e.sym ? ` · ${e.sym}` : ''}`
+    case 'order_cancelled': return `${e.label ?? 'Order'} cancelled${e.sym ? ` · ${e.sym}` : ''}`
     default:                return e.type
   }
 }
 
 function entryRightValue(e) {
+  if (e.status === 'pending') {
+    /* For pending closes, PnL is unknown */
+    if (e.type === 'close' || e.type === 'cross_close') return { value: 'pending…', cls: 'text-muted' }
+  }
   if (e.type === 'close' && e.pnl != null)
     return { value: fmtPnl(e.pnl), cls: pnlClass(e.pnl) }
   if (e.type === 'open' && e.size != null)
@@ -52,6 +61,44 @@ function entryRightValue(e) {
   if ((e.type === 'deposit' || e.type === 'withdraw') && e.amount != null)
     return { value: fmtUsdc(e.amount), cls: '' }
   return { value: '—', cls: '' }
+}
+
+/* ── Status badge ────────────────────────────────────────────────── */
+function StatusBadge({ status }) {
+  if (!status || status === 'confirmed') return null
+  if (status === 'pending') {
+    return (
+      <span style={{
+        fontSize: 9, padding: '2px 6px', borderRadius: 4, fontWeight: 700,
+        background: 'var(--orange-dim)', color: 'var(--orange)',
+        display: 'inline-flex', alignItems: 'center', gap: 3,
+      }}>
+        <span className="spinner" style={{ width: 7, height: 7, borderWidth: 1 }} />
+        Pending
+      </span>
+    )
+  }
+  if (status === 'failed') {
+    return (
+      <span style={{
+        fontSize: 9, padding: '2px 6px', borderRadius: 4, fontWeight: 700,
+        background: 'var(--red-dim)', color: 'var(--red)',
+      }}>
+        Failed
+      </span>
+    )
+  }
+  if (status === 'cancelled') {
+    return (
+      <span style={{
+        fontSize: 9, padding: '2px 6px', borderRadius: 4, fontWeight: 700,
+        background: 'var(--surface-3)', color: 'var(--text-3)',
+      }}>
+        Cancelled
+      </span>
+    )
+  }
+  return null
 }
 
 /* Filter tabs */
@@ -69,6 +116,7 @@ function matchesFilter(type, filter) {
 function EntryRow({ entry }) {
   const meta  = TYPE_META[entry.type] ?? { label: entry.type, badgeCls: 'badge-neutral' }
   const right = entryRightValue(entry)
+  const isPending = entry.status === 'pending'
 
   return (
     <div style={{
@@ -77,32 +125,37 @@ function EntryRow({ entry }) {
       display: 'flex',
       flexDirection: 'column',
       gap: 4,
+      opacity: isPending ? 0.8 : 1,
     }}>
       {/* Top row */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
           <span className={`badge ${meta.badgeCls}`} style={{ fontSize: 10, padding: '2px 7px' }}>
             {meta.label}
           </span>
+          <StatusBadge status={entry.status} />
           <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-1)' }}>
             {entryDescription(entry)}
           </span>
         </div>
-        <span className={`mono ${right.cls}`} style={{ fontSize: 13, fontWeight: 700 }}>
+        <span
+          className={`mono ${right.cls}`}
+          style={{ fontSize: 13, fontWeight: 700, color: right.cls === 'text-muted' ? 'var(--text-3)' : undefined }}
+        >
           {right.value}
         </span>
       </div>
 
-      {/* Bottom row — collateral detail + time + tx link */}
+      {/* Bottom row — details + time + tx link */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <div style={{ display: 'flex', gap: 10, fontSize: 11, color: 'var(--text-3)' }}>
-          {entry.type === 'open' && entry.collateral != null && (
+        <div style={{ display: 'flex', gap: 10, fontSize: 11, color: 'var(--text-3)', flexWrap: 'wrap' }}>
+          {(entry.type === 'open' || entry.type === 'close') && entry.collateral != null && (
             <span>Col: {fmtUsdc(entry.collateral)}</span>
           )}
-          {entry.type === 'close' && entry.collateral != null && (
-            <span>Col: {fmtUsdc(entry.collateral)}</span>
+          {(entry.type === 'open' || entry.type === 'close') && entry.entryPrice != null && (
+            <span>Price: {fmtPriceRaw(entry.entryPrice)}</span>
           )}
-          <span>{relTime(entry.ts)}</span>
+          <span>{isPending ? 'just submitted' : relTime(entry.ts)}</span>
         </div>
         <a
           href={BASESCAN_TX + entry.hash}
@@ -110,7 +163,7 @@ function EntryRow({ entry }) {
           rel="noreferrer"
           style={{
             fontSize: 11, color: 'var(--blue)', fontFamily: 'var(--font-mono)',
-            textDecoration: 'none',
+            textDecoration: 'none', flexShrink: 0,
           }}
         >
           {entry.hash.slice(0, 8)}…↗
@@ -165,6 +218,7 @@ export function HistoryPanel({ entries, loading, error, account, reload }) {
   const [filter, setFilter] = useState('All')
 
   const visible = entries.filter((e) => matchesFilter(e.type, filter))
+  const pendingCount = entries.filter((e) => e.status === 'pending').length
 
   return (
     <div>
@@ -191,14 +245,22 @@ export function HistoryPanel({ entries, loading, error, account, reload }) {
             </button>
           ))}
         </div>
-        <button
-          onClick={reload}
-          disabled={loading}
-          className="btn btn-ghost btn-sm"
-          style={{ fontSize: 11 }}
-        >
-          {loading ? <span className="spinner" style={{ width: 12, height: 12 }} /> : '↻ Refresh'}
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          {pendingCount > 0 && (
+            <span style={{ fontSize: 11, color: 'var(--orange)', display: 'flex', alignItems: 'center', gap: 4 }}>
+              <span className="spinner" style={{ width: 10, height: 10, borderWidth: 1 }} />
+              {pendingCount} pending
+            </span>
+          )}
+          <button
+            onClick={reload}
+            disabled={loading}
+            className="btn btn-ghost btn-sm"
+            style={{ fontSize: 11 }}
+          >
+            {loading ? <span className="spinner" style={{ width: 12, height: 12 }} /> : '↻ Refresh'}
+          </button>
+        </div>
       </div>
 
       {/* Progressive load indicator — older batches still fetching */}

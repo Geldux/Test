@@ -10,6 +10,7 @@ import { useHistory }    from '@/hooks/useHistory'
 import { fmtUsdc, fmtUsdcCompact } from '@/utils/format'
 import { MARKETS } from '@/config/markets'
 
+import { writePendingToSupabase } from '@/services/historyService'
 import { toast }           from '@/components/Toast'
 import { DesktopHeader, MobileHeader } from '@/components/Header'
 import { DesktopMarketBar, MobileMarketChips } from '@/components/MarketBar'
@@ -80,21 +81,37 @@ export default function App() {
           : await openPosition({ sym: s, isLong, leverage, collateralUsd })
         toast.success(`Opened ${isCross ? 'Cross ' : ''}${isLong ? 'Long' : 'Short'} ${s} · ${th(hash)}`)
         pts.onOpen(hash, s, collateralUsd)
+        writePendingToSupabase({
+          type: isCross ? 'cross_open' : 'open', hash,
+          sym: s, isLong, leverage,
+          collateral: collateralUsd,
+          size: collateralUsd * leverage,
+          mode: isCross ? 'cross' : 'isolated',
+        }, account)
         setTimeout(refresh, 3000)
       } else if (type === 'limit') {
         const { hash } = await createLimitOrder({ sym: s, isLong, leverage, collateralUsd, triggerPrice })
         toast.success(`Limit order placed · ${th(hash)}`)
+        writePendingToSupabase({
+          type: 'order_created', hash,
+          sym: s, isLong, leverage,
+          collateral: collateralUsd,
+          entryPrice: triggerPrice ?? null,
+          mode: 'isolated',
+          label: 'Limit',
+        }, account)
         setTimeout(refresh, 3000)
       }
     } catch (e) {
       toast.error(e?.reason || e?.message || 'Transaction failed')
     }
-  }, [openPosition, crossOpenPosition, createLimitOrder, pts, refresh])
+  }, [openPosition, crossOpenPosition, createLimitOrder, pts, refresh, account])
 
   /* ── close handler ───────────────────────────────────────────── */
   const handleClose = useCallback(async (posId, pct = 100) => {
     const pos = positions.find((p) => p.id === posId)
     const isCrossPos = crossAccount?.posIds?.includes(posId)
+    const sym = MARKETS.find((m) => m.key === pos?.assetKey)?.sym ?? 'position'
     try {
       let hash
       if (isCrossPos) {
@@ -107,15 +124,24 @@ export default function App() {
         ;({ hash } = await partialClosePosition({ posId, collateralDelta }))
       } else {
         /* full isolated close */
-        ;({ hash } = await closePosition({ posId, sym: pos?.sym || 'BTC' }))
+        ;({ hash } = await closePosition({ posId, sym: sym !== 'position' ? sym : 'BTC' }))
       }
-      toast.success(`${pct < 100 ? `Partially closed (${pct}%)` : 'Closed'} ${pos?.sym || 'position'} · ${th(hash)}`)
-      if (pos) pts.onClose(posId, pos.sym, 0)
+      toast.success(`${pct < 100 ? `Partially closed (${pct}%)` : 'Closed'} ${sym} · ${th(hash)}`)
+      if (pos) pts.onClose(posId, sym, 0)
+      writePendingToSupabase({
+        type: isCrossPos ? 'cross_close' : 'close', hash,
+        sym, isLong: pos?.isLong ?? null,
+        leverage: pos?.leverage ?? null,
+        collateral: pos?.collateral ?? null,
+        size: pos?.size ?? null,
+        posId: String(posId),
+        mode: isCrossPos ? 'cross' : 'isolated',
+      }, account)
       setTimeout(refresh, 3000)
     } catch (e) {
       toast.error(e?.reason || e?.message || 'Close failed')
     }
-  }, [closePosition, partialClosePosition, crossClosePosition, crossAccount, positions, pts, refresh])
+  }, [closePosition, partialClosePosition, crossClosePosition, crossAccount, positions, pts, refresh, account])
 
   /* ── SL/TP handler ───────────────────────────────────────────── */
   const handleSlTp = useCallback(async (posId, type, price) => {
@@ -154,35 +180,47 @@ export default function App() {
 
   /* ── cancel order ────────────────────────────────────────────── */
   const handleCancelOrder = useCallback(async (orderId) => {
+    const ord = orders.find((o) => o.id === orderId)
     try {
-      await cancelOrder({ orderId })
+      const { hash } = await cancelOrder({ orderId })
       toast.success('Order cancelled')
+      writePendingToSupabase({
+        type: 'order_cancelled',
+        hash: hash ?? `cancel-${orderId}-${Date.now()}`,
+        label: 'Order',
+        orderId,
+        sym: ord ? (MARKETS.find((m) => m.key === ord.assetKey)?.sym ?? '') : '',
+        isLong: ord?.isLong ?? null,
+        mode: null,
+      }, account)
       setTimeout(refresh, 2000)
     } catch (e) {
       toast.error(e?.reason || e?.message || 'Cancel failed')
     }
-  }, [cancelOrder, refresh])
+  }, [cancelOrder, refresh, orders, account])
 
   /* ── cross margin ────────────────────────────────────────────── */
   const handleCrossDeposit = useCallback(async (amountUsd) => {
     try {
       const { hash } = await crossDeposit({ amountUsd })
       toast.success(`Deposited to cross margin · ${th(hash)}`)
+      writePendingToSupabase({ type: 'deposit', hash, amount: amountUsd, mode: 'cross', sym: '' }, account)
       setTimeout(refresh, 3000)
     } catch (e) {
       toast.error(e?.reason || e?.message || 'Deposit failed')
     }
-  }, [crossDeposit, refresh])
+  }, [crossDeposit, refresh, account])
 
   const handleCrossWithdraw = useCallback(async (amountUsd) => {
     try {
       const { hash } = await crossWithdraw({ amountUsd })
       toast.success(`Withdrawn from cross margin · ${th(hash)}`)
+      writePendingToSupabase({ type: 'withdraw', hash, amount: amountUsd, mode: 'cross', sym: '' }, account)
       setTimeout(refresh, 3000)
     } catch (e) {
       toast.error(e?.reason || e?.message || 'Withdraw failed')
     }
-  }, [crossWithdraw, refresh])
+  }, [crossWithdraw, refresh, account])
 
   /* ── faucet ──────────────────────────────────────────────────── */
   const handleFaucet = useCallback(async () => {
