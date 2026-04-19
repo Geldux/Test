@@ -118,6 +118,66 @@ async function sendWithRetry(contractFn, maxRetries = 4) {
   }
 }
 
+/* ── Receipt polling via dedicated read RPC ──────────────────────────── */
+/* tx.wait(1) polls through BrowserProvider (MetaMask) whose configured   */
+/* public RPC rate-limits eth_getTransactionReceipt → "coalesce" errors.  */
+/* This replaces it with explicit polling against our JsonRpcProvider.    */
+async function pollReceipt(provider, txHash, maxWaitMs = 120_000) {
+  const deadline = Date.now() + maxWaitMs
+  let interval   = 2_000   /* start 2s; exponential backoff on 429 */
+  while (Date.now() < deadline) {
+    let receipt = null
+    try {
+      receipt = await provider.getTransactionReceipt(txHash)
+    } catch (e) {
+      if (/rate.?limit|429|coalesce/i.test(e?.message ?? '')) {
+        interval = Math.min(interval * 2, 16_000)
+        console.warn('[waitTx] receipt poll rate-limited — backing off to', interval / 1000, 's')
+      } else {
+        throw e
+      }
+    }
+    if (receipt) {
+      if (receipt.status === 0) throw new Error('Transaction reverted on-chain.')
+      return receipt
+    }
+    await new Promise((r) => setTimeout(r, interval))
+  }
+  throw new Error('Transaction not confirmed after 2 minutes — check the block explorer.')
+}
+
+/* ── Wait for receipt ────────────────────────────────────────────────── */
+async function waitTx(tx) {
+  const rp = getReadProvider()
+  /* Prefer dedicated JsonRpcProvider; fall back to BrowserProvider only if no RPC configured */
+  if (rp) return pollReceipt(rp, tx.hash)
+  const receipt = await tx.wait(1)
+  if (receipt?.status === 0) throw new Error('Transaction reverted on-chain.')
+  return receipt
+}
+
+/* ── Decode simulation error ─────────────────────────────────────────── */
+/* When a contract reverts with a custom error and the ABI lacks the      */
+/* error definition, ethers returns raw bytes. Extract the 4-byte         */
+/* selector so it can be identified and added to the ABI.                */
+function decodeSimError(err) {
+  const data = err?.data ?? err?.error?.data ?? ''
+  if (typeof data === 'string' && data.length >= 10 && data !== '0x') {
+    const selector = data.slice(0, 10)
+    console.error('[decodeSimError] raw revert data:', data)
+    console.error('[decodeSimError] 4-byte selector:', selector, '— add matching error() to ABI_CROSS_MARGIN')
+    if (err?.reason) return err.reason
+    return `Contract error ${selector} — see console for raw revert data`
+  }
+  return err?.reason ?? err?.shortMessage ?? err?.message ?? 'Simulation reverted'
+}
+
+/* ── Classify simulation failure: infrastructure vs contract revert ───── */
+function isInfraError(err) {
+  return /rate.?limit|429|coalesce|network|timeout|econnrefused|could not detect/i
+    .test(err?.message ?? '')
+}
+
 /* ── Pyth VAA + fee ──────────────────────────────────────────────────── */
 async function getPythData(signer) {
   const pythIds    = MARKETS.map((m) => m.pythId)
@@ -133,13 +193,6 @@ async function getPythData(signer) {
     console.warn('[getPythData] getUpdateFee failed, using 1 wei fallback:', e?.message)
   }
   return { updateData, fee }
-}
-
-/* ── Wait for receipt ────────────────────────────────────────────────── */
-async function waitTx(tx) {
-  const receipt = await tx.wait(1)
-  if (receipt?.status === 0) throw new Error('Transaction reverted on-chain.')
-  return receipt
 }
 
 export function useTrading({ onSuccess, onError } = {}) {
@@ -433,19 +486,23 @@ export function useTrading({ onSuccess, onError } = {}) {
       console.log('  fn       : depositWithPermit(uint256 amt, uint256 deadline, uint8 v, bytes32 r, bytes32 s)')
       console.log('  args     : [amtRaw, deadline, v, r, s] — same for simulation and real tx')
 
-      /* Static simulation — pass { from: owner } so msg.sender inside the
-         contract is the actual user address, not address(0).
-         Without this, the permit check inside depositWithPermit uses
-         msg.sender = address(0) → ecrecover mismatch → "invalid signature"
-         → simulation fails → real tx is never broadcast. */
+      /* Static simulation — { from: owner } so msg.sender = user, not address(0).
+         Without this, the permit ecrecover check fails → simulation blocks deposit.
+         Routed through read provider so MetaMask's RPC rate limit doesn't block it. */
       setStep('Simulating deposit…')
+      const rpDep     = getReadProvider()
+      const crossDep  = rpDep ? new Contract(ADDRESSES.CROSS_MARGIN, ABI_CROSS_MARGIN, rpDep) : cross
       try {
-        await cross.depositWithPermit.staticCall(amtRaw, deadline, v, r, s, { from: owner })
+        await crossDep.depositWithPermit.staticCall(amtRaw, deadline, v, r, s, { from: owner })
         console.log('[crossDeposit] simulation PASSED ✓')
       } catch (simErr) {
-        const reason = simErr.reason ?? simErr.shortMessage ?? simErr.message ?? 'unknown revert'
-        console.error('[crossDeposit] SIMULATION FAILED:', reason, simErr)
-        throw new Error(String(reason).split(' (action=')[0].slice(0, 120))
+        if (isInfraError(simErr)) {
+          console.warn('[crossDeposit] simulation skipped (provider throttled) — submitting anyway')
+        } else {
+          const reason = decodeSimError(simErr)
+          console.error('[crossDeposit] SIMULATION FAILED:', reason, simErr)
+          throw new Error(String(reason).split(' (action=')[0].slice(0, 160))
+        }
       }
 
       console.log('[crossDeposit] ── SUBMITTING ──')
@@ -531,17 +588,25 @@ export function useTrading({ onSuccess, onError } = {}) {
       console.log('  cRaw      :', cRaw.toString(), '(', collateralUsd, 'USDC)')
       console.log('  contract  :', ADDRESSES.CROSS_MARGIN)
 
-      /* Static simulation — catches reverts (price staleness, margin, access) before gas is spent */
+      /* Simulation — routed through dedicated JsonRpcProvider (not BrowserProvider)
+         so MetaMask's rate-limited RPC never blocks the pre-flight eth_call.
+         If the RPC itself is throttled, skip simulation rather than blocking the tx. */
       setStep('Simulating…')
+      const rp      = getReadProvider()
+      const crossSim = rp ? new Contract(ADDRESSES.CROSS_MARGIN, ABI_CROSS_MARGIN, rp) : cross
       try {
-        await cross.openPosition.staticCall(
+        await crossSim.openPosition.staticCall(
           market.key, isLong, Number(leverage), cRaw, false, { from: owner }
         )
         console.log('[crossOpenPosition] simulation PASSED ✓')
       } catch (simErr) {
-        const reason = simErr.reason ?? simErr.shortMessage ?? simErr.message ?? 'unknown revert'
-        console.error('[crossOpenPosition] SIMULATION FAILED:', reason, simErr)
-        throw new Error(String(reason).split(' (action=')[0].slice(0, 200))
+        if (isInfraError(simErr)) {
+          console.warn('[crossOpenPosition] simulation skipped (provider throttled) — submitting anyway')
+        } else {
+          const reason = decodeSimError(simErr)
+          console.error('[crossOpenPosition] SIMULATION FAILED:', reason, simErr)
+          throw new Error(String(reason).split(' (action=')[0].slice(0, 200))
+        }
       }
 
       setStep(`Submitting cross ${isLong ? 'Long' : 'Short'}…`)
@@ -567,15 +632,21 @@ export function useTrading({ onSuccess, onError } = {}) {
       console.log('  fractionBps :', fractionBps, '(', (fractionBps / 100).toFixed(0), '%)')
       console.log('  contract    :', ADDRESSES.CROSS_MARGIN)
 
-      /* Static simulation — catches reverts before gas is spent */
+      /* Simulation — dedicated JsonRpcProvider so BrowserProvider rate limits don't block pre-flight */
       setStep('Simulating…')
+      const rp2      = getReadProvider()
+      const crossSim2 = rp2 ? new Contract(ADDRESSES.CROSS_MARGIN, ABI_CROSS_MARGIN, rp2) : cross
       try {
-        await cross.closePosition.staticCall(posId, fractionBps, { from: owner })
+        await crossSim2.closePosition.staticCall(posId, fractionBps, { from: owner })
         console.log('[crossClosePosition] simulation PASSED ✓')
       } catch (simErr) {
-        const reason = simErr.reason ?? simErr.shortMessage ?? simErr.message ?? 'unknown revert'
-        console.error('[crossClosePosition] SIMULATION FAILED:', reason, simErr)
-        throw new Error(String(reason).split(' (action=')[0].slice(0, 200))
+        if (isInfraError(simErr)) {
+          console.warn('[crossClosePosition] simulation skipped (provider throttled) — submitting anyway')
+        } else {
+          const reason = decodeSimError(simErr)
+          console.error('[crossClosePosition] SIMULATION FAILED:', reason, simErr)
+          throw new Error(String(reason).split(' (action=')[0].slice(0, 200))
+        }
       }
 
       setStep('Submitting close…')
