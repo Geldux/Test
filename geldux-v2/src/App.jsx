@@ -28,6 +28,13 @@ import { PriceChart }       from '@/components/PriceChart'
 /* ── helpers ────────────────────────────────────────────────────── */
 function th(h) { return h ? h.slice(0, 10) + '…' : '' }
 
+/* Strip verbose ethers boilerplate from caught errors */
+function txErr(e, fallback = 'Transaction failed') {
+  const raw = e?.reason || e?.shortMessage || e?.message || ''
+  if (!raw) return fallback
+  return raw.split(' (action=')[0].split('\n')[0].slice(0, 200) || fallback
+}
+
 /* ═══════════════════════════════════════════════════════════════════
    App
 ═══════════════════════════════════════════════════════════════════ */
@@ -120,7 +127,7 @@ export default function App() {
         setTimeout(histReload, 2000)
       }
     } catch (e) {
-      toast.error(e?.reason || e?.message || 'Transaction failed')
+      toast.error(txErr(e, 'Transaction failed'))
     }
   }, [openPosition, crossOpenPosition, createLimitOrder, pts, refresh, histReload, account])
 
@@ -158,7 +165,7 @@ export default function App() {
       setTimeout(refresh, 3000)
       setTimeout(histReload, 2000)
     } catch (e) {
-      toast.error(e?.reason || e?.message || 'Close failed')
+      toast.error(txErr(e, 'Close failed'))
     }
   }, [closePosition, partialClosePosition, crossClosePosition, crossAccount, positions, pts, refresh, histReload, account])
 
@@ -238,7 +245,7 @@ export default function App() {
       setTimeout(refresh, 3000)
       setTimeout(histReload, 2000)
     } catch (e) {
-      toast.error(e?.reason || e?.message || 'Deposit failed')
+      toast.error(txErr(e, 'Deposit failed'))
     }
   }, [crossDeposit, refresh, histReload, account])
 
@@ -257,7 +264,7 @@ export default function App() {
       setTimeout(refresh, 3000)
       setTimeout(histReload, 2000)
     } catch (e) {
-      toast.error(e?.reason || e?.message || 'Withdraw failed')
+      toast.error(txErr(e, 'Withdraw failed'))
     }
   }, [crossWithdraw, refresh, histReload, account])
 
