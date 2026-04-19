@@ -494,12 +494,20 @@ export function useTrading({ onSuccess, onError } = {}) {
   /* account balance — no permit needed.                              */
   const crossIncreasePosition = useCallback(async ({ posId, collateralUsd }) => {
     return run('Increasing cross position…', async () => {
-      const signer  = getSigner()
+      const signer   = getSigner()
       if (!signer) throw new Error('Wallet not connected')
       const extraRaw = parseUnits(String(Number(collateralUsd).toFixed(18)), 18)
       const cross    = new Contract(ADDRESSES.CROSS_MARGIN, ABI_CROSS_MARGIN, signer)
-      const tx       = await cross.increasePosition(posId, extraRaw)
-      const receipt  = await waitTx(tx)
+
+      if (import.meta.env.DEV) {
+        console.log('[crossIncreasePosition] posId:', posId.toString(), '| extra:', extraRaw.toString(), '(', collateralUsd, 'USDC)')
+      }
+
+      setStep('Submitting increase…')
+      /* gasLimit skips eth_estimateGas, preventing rate-limit failures on MetaMask RPC */
+      const tx      = await cross.increasePosition(posId, extraRaw, { gasLimit: 400_000 })
+      setStep('Confirming on Base…')
+      const receipt = await waitTx(tx)
       return { hash: tx.hash, receipt }
     })
   }, [run])
@@ -507,14 +515,39 @@ export function useTrading({ onSuccess, onError } = {}) {
   /* ── Cross margin open position ──────────────────────────────────── */
   const crossOpenPosition = useCallback(async ({ sym, isLong, leverage, collateralUsd }) => {
     return run(`Opening cross ${isLong ? 'Long' : 'Short'} ${sym}…`, async () => {
-      const signer  = getSigner()
+      const signer = getSigner()
       if (!signer) throw new Error('Wallet not connected')
-      const market  = MARKETS.find((m) => m.sym === sym)
+      const market = MARKETS.find((m) => m.sym === sym)
       if (!market) throw new Error('Unknown market')
-      const cRaw    = parseUnits(String(Number(collateralUsd).toFixed(18)), 18)
-      const cross   = new Contract(ADDRESSES.CROSS_MARGIN, ABI_CROSS_MARGIN, signer)
-      console.log('[crossOpenPosition] key:', market.key, '| isLong:', isLong, '| leverage:', leverage, '| cRaw:', cRaw.toString())
-      const tx      = await sendWithRetry(() => cross.openPosition(market.key, isLong, Number(leverage), cRaw, false))
+      const owner  = await signer.getAddress()
+      const cRaw   = parseUnits(String(Number(collateralUsd).toFixed(18)), 18)
+      const cross  = new Contract(ADDRESSES.CROSS_MARGIN, ABI_CROSS_MARGIN, signer)
+
+      console.log('[crossOpenPosition] ── PRE-SUBMIT ──')
+      console.log('  owner     :', owner)
+      console.log('  market    :', market.key, '|', sym)
+      console.log('  isLong    :', isLong)
+      console.log('  leverage  :', Number(leverage))
+      console.log('  cRaw      :', cRaw.toString(), '(', collateralUsd, 'USDC)')
+      console.log('  contract  :', ADDRESSES.CROSS_MARGIN)
+
+      /* Static simulation — catches reverts (price staleness, margin, access) before gas is spent */
+      setStep('Simulating…')
+      try {
+        await cross.openPosition.staticCall(
+          market.key, isLong, Number(leverage), cRaw, false, { from: owner }
+        )
+        console.log('[crossOpenPosition] simulation PASSED ✓')
+      } catch (simErr) {
+        const reason = simErr.reason ?? simErr.shortMessage ?? simErr.message ?? 'unknown revert'
+        console.error('[crossOpenPosition] SIMULATION FAILED:', reason, simErr)
+        throw new Error(String(reason).split(' (action=')[0].slice(0, 200))
+      }
+
+      setStep(`Submitting cross ${isLong ? 'Long' : 'Short'}…`)
+      /* gasLimit skips eth_estimateGas; args must be identical to simulation above */
+      const tx      = await cross.openPosition(market.key, isLong, Number(leverage), cRaw, false, { gasLimit: 500_000 })
+      setStep('Confirming on Base…')
       const receipt = await waitTx(tx)
       return { hash: tx.hash, receipt }
     })
@@ -523,10 +556,32 @@ export function useTrading({ onSuccess, onError } = {}) {
   /* ── Cross margin close position ─────────────────────────────────── */
   const crossClosePosition = useCallback(async ({ posId, fractionBps = 10000 }) => {
     return run('Closing cross position…', async () => {
-      const signer  = getSigner()
+      const signer = getSigner()
       if (!signer) throw new Error('Wallet not connected')
-      const cross   = new Contract(ADDRESSES.CROSS_MARGIN, ABI_CROSS_MARGIN, signer)
-      const tx      = await cross.closePosition(posId, fractionBps)
+      const owner  = await signer.getAddress()
+      const cross  = new Contract(ADDRESSES.CROSS_MARGIN, ABI_CROSS_MARGIN, signer)
+
+      console.log('[crossClosePosition] ── PRE-SUBMIT ──')
+      console.log('  owner       :', owner)
+      console.log('  posId       :', posId.toString())
+      console.log('  fractionBps :', fractionBps, '(', (fractionBps / 100).toFixed(0), '%)')
+      console.log('  contract    :', ADDRESSES.CROSS_MARGIN)
+
+      /* Static simulation — catches reverts before gas is spent */
+      setStep('Simulating…')
+      try {
+        await cross.closePosition.staticCall(posId, fractionBps, { from: owner })
+        console.log('[crossClosePosition] simulation PASSED ✓')
+      } catch (simErr) {
+        const reason = simErr.reason ?? simErr.shortMessage ?? simErr.message ?? 'unknown revert'
+        console.error('[crossClosePosition] SIMULATION FAILED:', reason, simErr)
+        throw new Error(String(reason).split(' (action=')[0].slice(0, 200))
+      }
+
+      setStep('Submitting close…')
+      /* gasLimit skips eth_estimateGas; args identical to simulation */
+      const tx      = await cross.closePosition(posId, fractionBps, { gasLimit: 500_000 })
+      setStep('Confirming on Base…')
       const receipt = await waitTx(tx)
       return { hash: tx.hash, receipt }
     })
