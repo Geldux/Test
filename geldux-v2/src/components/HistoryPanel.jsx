@@ -157,17 +157,19 @@ function EntryRow({ entry }) {
           )}
           <span>{isPending ? 'just submitted' : relTime(entry.ts)}</span>
         </div>
-        <a
-          href={BASESCAN_TX + entry.hash}
-          target="_blank"
-          rel="noreferrer"
-          style={{
-            fontSize: 11, color: 'var(--blue)', fontFamily: 'var(--font-mono)',
-            textDecoration: 'none', flexShrink: 0,
-          }}
-        >
-          {entry.hash.slice(0, 8)}…↗
-        </a>
+        {entry.hash ? (
+          <a
+            href={BASESCAN_TX + entry.hash}
+            target="_blank"
+            rel="noreferrer"
+            style={{
+              fontSize: 11, color: 'var(--blue)', fontFamily: 'var(--font-mono)',
+              textDecoration: 'none', flexShrink: 0,
+            }}
+          >
+            {entry.hash.slice(0, 8)}…↗
+          </a>
+        ) : null}
       </div>
     </div>
   )
@@ -290,7 +292,7 @@ export function HistoryPanel({ entries, loading, error, account, reload }) {
             No {filter.toLowerCase()} activity found
           </div>
         ) : (
-          visible.map((e, i) => <EntryRow key={e.hash + i} entry={e} />)
+          visible.map((e, i) => <EntryRow key={(e._tempId ?? e.hash) + i} entry={e} />)
         )}
       </div>
     </div>

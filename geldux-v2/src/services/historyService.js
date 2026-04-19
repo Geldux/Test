@@ -101,6 +101,24 @@ export async function readFromSupabase(wallet) {
 /* ── Supabase writes ────────────────────────────────────────────────── */
 
 /**
+ * Write a confirmed tx immediately after receipt — no waiting for the slow scan.
+ * Upserts so duplicate writes (e.g. scan + fast path) are idempotent.
+ */
+export async function writeConfirmedTxToSupabase(entry, wallet) {
+  if (!HAS_SUPABASE) return
+  try {
+    const row = entryToRow({ ...entry, status: 'confirmed' }, wallet)
+    const { error } = await supabase
+      .from('geldux_history')
+      .upsert([row], { onConflict: 'tx_hash,type,wallet' })
+    if (error) console.error('[historyService] confirmed write error:', error.message, error)
+    else console.log(`[historyService] confirmed ${entry.type} ${entry.hash?.slice(0, 8)}… written for ${wallet.slice(0, 8)}…`)
+  } catch (e) {
+    console.error('[historyService] confirmed write failed:', e?.message ?? e)
+  }
+}
+
+/**
  * Write a pending record immediately on tx submission.
  * Upserts so a re-submission of the same hash is idempotent.
  */

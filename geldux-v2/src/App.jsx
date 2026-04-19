@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useMemo, useEffect } from 'react'
 import { useTheme }     from '@/hooks/useTheme'
 import { useWallet }    from '@/hooks/useWallet'
 import { usePrices }    from '@/hooks/usePrices'
@@ -10,7 +10,7 @@ import { useHistory }    from '@/hooks/useHistory'
 import { fmtUsdc, fmtUsdcCompact } from '@/utils/format'
 import { MARKETS } from '@/config/markets'
 
-import { writePendingToSupabase } from '@/services/historyService'
+import { writeConfirmedTxToSupabase } from '@/services/historyService'
 import { toast }           from '@/components/Toast'
 import { DesktopHeader, MobileHeader } from '@/components/Header'
 import { DesktopMarketBar, MobileMarketChips } from '@/components/MarketBar'
@@ -64,6 +64,18 @@ export default function App() {
   /* ── points ───────────────────────────────────────────────────── */
   const pts = usePoints()
 
+  /* ── local fast-path tx state ────────────────────────────────── */
+  const [localTxs, setLocalTxs] = useState([])
+
+  /* Reset when wallet disconnects / changes */
+  useEffect(() => { setLocalTxs([]) }, [account])
+
+  /* Merge: local confirmed entries stay visible until histReload catches up */
+  const displayEntries = useMemo(() => {
+    const histHashes = new Set(histEntries.map((e) => e.hash))
+    return [...localTxs.filter((e) => !histHashes.has(e.hash)), ...histEntries]
+  }, [localTxs, histEntries])
+
   /* ── UI state ─────────────────────────────────────────────────── */
   const [page,         setPage]         = useState('trade')     // trade | spot | portfolio | rewards
   const [sym,          setSym]          = useState(MARKETS[0].sym)
@@ -76,36 +88,41 @@ export default function App() {
     try {
       if (type === 'open') {
         const isCross = mode === 'Cross'
-        const { hash } = isCross
+        const { hash, receipt } = isCross
           ? await crossOpenPosition({ sym: s, isLong, leverage, collateralUsd })
           : await openPosition({ sym: s, isLong, leverage, collateralUsd })
         toast.success(`Opened ${isCross ? 'Cross ' : ''}${isLong ? 'Long' : 'Short'} ${s} · ${th(hash)}`)
         pts.onOpen(hash, s, collateralUsd)
-        writePendingToSupabase({
-          type: isCross ? 'cross_open' : 'open', hash,
-          sym: s, isLong, leverage,
-          collateral: collateralUsd,
-          size: collateralUsd * leverage,
-          mode: isCross ? 'cross' : 'isolated',
-        }, account)
+        const entry = {
+          type: isCross ? 'cross_open' : 'open', hash, status: 'confirmed',
+          blockNumber: receipt?.blockNumber ?? 0, ts: Math.floor(Date.now() / 1000),
+          sym: s, isLong, leverage, collateral: collateralUsd,
+          size: collateralUsd * leverage, mode: isCross ? 'cross' : 'isolated',
+          pnl: null, amount: null, label: null, entryPrice: null, posId: null,
+        }
+        setLocalTxs((prev) => [entry, ...prev])
+        writeConfirmedTxToSupabase(entry, account)
         setTimeout(refresh, 3000)
+        setTimeout(histReload, 2000)
       } else if (type === 'limit') {
-        const { hash } = await createLimitOrder({ sym: s, isLong, leverage, collateralUsd, triggerPrice })
+        const { hash, receipt } = await createLimitOrder({ sym: s, isLong, leverage, collateralUsd, triggerPrice })
         toast.success(`Limit order placed · ${th(hash)}`)
-        writePendingToSupabase({
-          type: 'order_created', hash,
-          sym: s, isLong, leverage,
-          collateral: collateralUsd,
-          entryPrice: triggerPrice ?? null,
-          mode: 'isolated',
-          label: 'Limit',
-        }, account)
+        const entry = {
+          type: 'order_created', hash, status: 'confirmed',
+          blockNumber: receipt?.blockNumber ?? 0, ts: Math.floor(Date.now() / 1000),
+          sym: s, isLong, leverage, collateral: collateralUsd,
+          entryPrice: triggerPrice ?? null, mode: 'isolated', label: 'Limit',
+          pnl: null, amount: null, posId: null, size: null,
+        }
+        setLocalTxs((prev) => [entry, ...prev])
+        writeConfirmedTxToSupabase(entry, account)
         setTimeout(refresh, 3000)
+        setTimeout(histReload, 2000)
       }
     } catch (e) {
       toast.error(e?.reason || e?.message || 'Transaction failed')
     }
-  }, [openPosition, crossOpenPosition, createLimitOrder, pts, refresh, account])
+  }, [openPosition, crossOpenPosition, createLimitOrder, pts, refresh, histReload, account])
 
   /* ── close handler ───────────────────────────────────────────── */
   const handleClose = useCallback(async (posId, pct = 100) => {
@@ -113,35 +130,37 @@ export default function App() {
     const isCrossPos = crossAccount?.posIds?.includes(posId)
     const sym = MARKETS.find((m) => m.key === pos?.assetKey)?.sym ?? 'position'
     try {
-      let hash
+      let hash, receipt
       if (isCrossPos) {
         /* cross-margin close — fractionBps: 10000 = full, else partial */
         const fractionBps = Math.round(pct * 100)
-        ;({ hash } = await crossClosePosition({ posId, fractionBps }))
+        ;({ hash, receipt } = await crossClosePosition({ posId, fractionBps }))
       } else if (pct < 100 && pos?.collateral) {
         /* partial close — reduce collateral by requested % */
         const collateralDelta = pos.collateral * pct / 100
-        ;({ hash } = await partialClosePosition({ posId, collateralDelta }))
+        ;({ hash, receipt } = await partialClosePosition({ posId, collateralDelta }))
       } else {
         /* full isolated close */
-        ;({ hash } = await closePosition({ posId, sym: sym !== 'position' ? sym : 'BTC' }))
+        ;({ hash, receipt } = await closePosition({ posId, sym: sym !== 'position' ? sym : 'BTC' }))
       }
       toast.success(`${pct < 100 ? `Partially closed (${pct}%)` : 'Closed'} ${sym} · ${th(hash)}`)
       if (pos) pts.onClose(posId, sym, 0)
-      writePendingToSupabase({
-        type: isCrossPos ? 'cross_close' : 'close', hash,
-        sym, isLong: pos?.isLong ?? null,
-        leverage: pos?.leverage ?? null,
-        collateral: pos?.collateral ?? null,
-        size: pos?.size ?? null,
-        posId: String(posId),
-        mode: isCrossPos ? 'cross' : 'isolated',
-      }, account)
+      const entry = {
+        type: isCrossPos ? 'cross_close' : 'close', hash, status: 'confirmed',
+        blockNumber: receipt?.blockNumber ?? 0, ts: Math.floor(Date.now() / 1000),
+        sym, isLong: pos?.isLong ?? null, leverage: pos?.leverage ?? null,
+        collateral: pos?.collateral ?? null, size: pos?.size ?? null,
+        posId: String(posId), mode: isCrossPos ? 'cross' : 'isolated',
+        pnl: null, amount: null, label: null, entryPrice: null,
+      }
+      setLocalTxs((prev) => [entry, ...prev])
+      writeConfirmedTxToSupabase(entry, account)
       setTimeout(refresh, 3000)
+      setTimeout(histReload, 2000)
     } catch (e) {
       toast.error(e?.reason || e?.message || 'Close failed')
     }
-  }, [closePosition, partialClosePosition, crossClosePosition, crossAccount, positions, pts, refresh, account])
+  }, [closePosition, partialClosePosition, crossClosePosition, crossAccount, positions, pts, refresh, histReload, account])
 
   /* ── SL/TP handler ───────────────────────────────────────────── */
   const handleSlTp = useCallback(async (posId, type, price) => {
@@ -182,45 +201,65 @@ export default function App() {
   const handleCancelOrder = useCallback(async (orderId) => {
     const ord = orders.find((o) => o.id === orderId)
     try {
-      const { hash } = await cancelOrder({ orderId })
+      const { hash, receipt } = await cancelOrder({ orderId })
       toast.success('Order cancelled')
-      writePendingToSupabase({
+      const entry = {
         type: 'order_cancelled',
         hash: hash ?? `cancel-${orderId}-${Date.now()}`,
-        label: 'Order',
-        orderId,
+        status: 'confirmed',
+        blockNumber: receipt?.blockNumber ?? 0, ts: Math.floor(Date.now() / 1000),
+        label: 'Order', orderId,
         sym: ord ? (MARKETS.find((m) => m.key === ord.assetKey)?.sym ?? '') : '',
-        isLong: ord?.isLong ?? null,
-        mode: null,
-      }, account)
+        isLong: ord?.isLong ?? null, mode: null,
+        pnl: null, amount: null, collateral: null, leverage: null, size: null, entryPrice: null, posId: null,
+      }
+      setLocalTxs((prev) => [entry, ...prev])
+      writeConfirmedTxToSupabase(entry, account)
       setTimeout(refresh, 2000)
+      setTimeout(histReload, 2000)
     } catch (e) {
       toast.error(e?.reason || e?.message || 'Cancel failed')
     }
-  }, [cancelOrder, refresh, orders, account])
+  }, [cancelOrder, refresh, histReload, orders, account])
 
   /* ── cross margin ────────────────────────────────────────────── */
   const handleCrossDeposit = useCallback(async (amountUsd) => {
     try {
-      const { hash } = await crossDeposit({ amountUsd })
+      const { hash, receipt } = await crossDeposit({ amountUsd })
       toast.success(`Deposited to cross margin · ${th(hash)}`)
-      writePendingToSupabase({ type: 'deposit', hash, amount: amountUsd, mode: 'cross', sym: '' }, account)
+      const entry = {
+        type: 'deposit', hash, amount: amountUsd, status: 'confirmed',
+        blockNumber: receipt?.blockNumber ?? 0, ts: Math.floor(Date.now() / 1000),
+        mode: 'cross', sym: '',
+        pnl: null, collateral: null, leverage: null, size: null, entryPrice: null, posId: null, label: null, isLong: null,
+      }
+      setLocalTxs((prev) => [entry, ...prev])
+      writeConfirmedTxToSupabase(entry, account)
       setTimeout(refresh, 3000)
+      setTimeout(histReload, 2000)
     } catch (e) {
       toast.error(e?.reason || e?.message || 'Deposit failed')
     }
-  }, [crossDeposit, refresh, account])
+  }, [crossDeposit, refresh, histReload, account])
 
   const handleCrossWithdraw = useCallback(async (amountUsd) => {
     try {
-      const { hash } = await crossWithdraw({ amountUsd })
+      const { hash, receipt } = await crossWithdraw({ amountUsd })
       toast.success(`Withdrawn from cross margin · ${th(hash)}`)
-      writePendingToSupabase({ type: 'withdraw', hash, amount: amountUsd, mode: 'cross', sym: '' }, account)
+      const entry = {
+        type: 'withdraw', hash, amount: amountUsd, status: 'confirmed',
+        blockNumber: receipt?.blockNumber ?? 0, ts: Math.floor(Date.now() / 1000),
+        mode: 'cross', sym: '',
+        pnl: null, collateral: null, leverage: null, size: null, entryPrice: null, posId: null, label: null, isLong: null,
+      }
+      setLocalTxs((prev) => [entry, ...prev])
+      writeConfirmedTxToSupabase(entry, account)
       setTimeout(refresh, 3000)
+      setTimeout(histReload, 2000)
     } catch (e) {
       toast.error(e?.reason || e?.message || 'Withdraw failed')
     }
-  }, [crossWithdraw, refresh, account])
+  }, [crossWithdraw, refresh, histReload, account])
 
   /* ── faucet ──────────────────────────────────────────────────── */
   const handleFaucet = useCallback(async () => {
@@ -391,7 +430,7 @@ export default function App() {
             {portfolioTab === 'history' && (
               <div style={{ padding: '0 24px 24px' }}>
                 <HistoryPanel
-                  entries={histEntries} loading={histLoading} error={histError}
+                  entries={displayEntries} loading={histLoading} error={histError}
                   account={account} reload={histReload}
                 />
               </div>
@@ -633,7 +672,7 @@ export default function App() {
             {portfolioTab === 'history' && (
               <div style={{ padding: '8px 12px 28px' }}>
                 <HistoryPanel
-                  entries={histEntries} loading={histLoading} error={histError}
+                  entries={displayEntries} loading={histLoading} error={histError}
                   account={account} reload={histReload}
                 />
               </div>
