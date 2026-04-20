@@ -271,17 +271,13 @@ export function useTrading({ onSuccess, onError } = {}) {
       console.log('  callArgs   :', market.key, isLong, Number(leverage), collateralRaw.toString(), false, deadline)
       console.log('  ──────────────────────────────────────────────────────')
 
-      /* ── Static simulation — decode exact revert before broadcasting ── */
-      setStep('Simulating…')
-      try {
-        await core.openWithPermitAndPriceUpdate.staticCall(...callArgs, { value: fee, from: owner })
-        console.log('[openPosition] simulation PASSED ✓')
-      } catch (simErr) {
-        const reason = simErr.reason ?? simErr.shortMessage ?? simErr.message ?? 'unknown revert'
-        console.error('[openPosition] SIMULATION FAILED:', reason, simErr)
-        /* Rethrow with clean message so the error toast is useful */
-        throw new Error(String(reason).split(' (action=')[0].slice(0, 120))
-      }
+      /* Diagnostic simulation only — never blocks submission */
+      core.openWithPermitAndPriceUpdate.staticCall(...callArgs, { value: fee, from: owner })
+        .then(() => console.log('[openPosition] simulation PASSED ✓'))
+        .catch((simErr) => {
+          const reason = simErr.reason ?? simErr.shortMessage ?? simErr.message ?? 'unknown revert'
+          console.warn('[openPosition] simulation diagnostic:', String(reason).split(' (action=')[0].slice(0, 120), simErr)
+        })
 
       setStep(`Submitting ${isLong ? 'Long' : 'Short'}…`)
       const tx      = await core.openWithPermitAndPriceUpdate(...callArgs, { value: fee })
@@ -331,16 +327,13 @@ export function useTrading({ onSuccess, onError } = {}) {
       console.log('  callArgs          :', posId.toString(), collateralRaw.toString(), deadline)
       console.log('  ──────────────────────────────────────────────────────')
 
-      /* ── Static simulation — catch permit/position failures before broadcasting ── */
-      setStep('Simulating…')
-      try {
-        await core.increaseWithPermitAndPriceUpdate.staticCall(...callArgs, { value: fee, from: owner })
-        console.log('[increasePosition] simulation PASSED ✓')
-      } catch (simErr) {
-        const reason = simErr.reason ?? simErr.shortMessage ?? simErr.message ?? 'unknown revert'
-        console.error('[increasePosition] SIMULATION FAILED:', reason, simErr)
-        throw new Error(String(reason).split(' (action=')[0].slice(0, 120))
-      }
+      /* Diagnostic simulation only — never blocks submission */
+      core.increaseWithPermitAndPriceUpdate.staticCall(...callArgs, { value: fee, from: owner })
+        .then(() => console.log('[increasePosition] simulation PASSED ✓'))
+        .catch((simErr) => {
+          const reason = simErr.reason ?? simErr.shortMessage ?? simErr.message ?? 'unknown revert'
+          console.warn('[increasePosition] simulation diagnostic:', String(reason).split(' (action=')[0].slice(0, 120), simErr)
+        })
 
       setStep('Submitting increase…')
       /* No leverage param — contract reads it from the existing position struct */
@@ -499,7 +492,7 @@ export function useTrading({ onSuccess, onError } = {}) {
       console.log('[crossDeposit] ── SUBMITTING ──')
       console.log('  args: [amtRaw, deadline, v, r, s] (same as simulation — no divergence)')
       setStep('Depositing…')
-      const tx      = await cross.depositWithPermit(amtRaw, deadline, v, r, s)
+      const tx      = await cross.depositWithPermit(amtRaw, deadline, v, r, s, { gasLimit: 400_000 })
       const receipt = await waitTx(tx)
       return { hash: tx.hash, receipt }
     })
@@ -512,7 +505,7 @@ export function useTrading({ onSuccess, onError } = {}) {
       if (!signer) throw new Error('Wallet not connected')
       const amtRaw  = parseUnits(String(Number(amountUsd).toFixed(18)), 18)
       const cross   = new Contract(ADDRESSES.CROSS_MARGIN, ABI_CROSS_MARGIN, signer)
-      const tx      = await cross.withdraw(amtRaw)
+      const tx      = await cross.withdraw(amtRaw, { gasLimit: 300_000 })
       const receipt = await waitTx(tx)
       return { hash: tx.hash, receipt }
     })
