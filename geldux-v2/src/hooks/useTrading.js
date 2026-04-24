@@ -1,10 +1,10 @@
 import { useState, useCallback } from 'react'
-import { Contract, parseUnits, Signature, TypedDataEncoder } from 'ethers'
-import { ADDRESSES, ABI_USDC, ABI_PYTH, ABI_PERP_CORE, ABI_ORDER_MANAGER, ABI_CROSS_MARGIN, ABI_FAUCET } from '@/config/contracts'
+import { Contract, parseUnits, Signature, TypedDataEncoder, Interface } from 'ethers'
+import { ADDRESSES, ABI_USDC, ABI_PYTH, ABI_PERP_CORE, ABI_PERP_CONFIG, ABI_PERP_STORE, ABI_ORDER_MANAGER, ABI_CROSS_MARGIN, ABI_FAUCET } from '@/config/contracts'
 import { CHAIN_ID, PERMIT_DEADLINE_SECONDS } from '@/config/chain'
 import { MARKETS } from '@/config/markets'
 import { getSigner, getAccount, getReadProvider } from './useWallet'
-import { fetchVaas } from './usePrices'
+import { fetchVaas, getCurrentPrice } from './usePrices'
 
 /* Development-only guard — logs a clear error if a critical invariant is violated */
 function devAssert(condition, msg) {
@@ -24,11 +24,19 @@ async function signPermit(signer, spender, amount) {
   devAssert(!!usdcProv, 'signPermit: no provider available for USDC reads')
   const usdcRead = new Contract(ADDRESSES.USDC, ABI_USDC, usdcProv)
 
-  /* Fetch name and on-chain DOMAIN_SEPARATOR in parallel */
-  const [name, onChainSep] = await Promise.all([
+  /* Fetch name, version, and on-chain DOMAIN_SEPARATOR in parallel.
+     version() may not exist on all tokens — catch and treat as null. */
+  const [name, onChainVersion, onChainSep] = await Promise.all([
     usdcRead.name().catch(() => 'USD Coin'),
+    usdcRead.version().catch(() => null),
     usdcRead.DOMAIN_SEPARATOR().catch(() => null),
   ])
+
+  if (onChainVersion !== null) {
+    console.log('[signPermit] version() on-chain:', JSON.stringify(onChainVersion))
+  } else {
+    console.warn('[signPermit] version() call failed — will try hardcoded candidates 1, 2, and no-version')
+  }
 
   /* Fetch nonce via read provider; fall back to signer provider, then 0n */
   let nonce = 0n
@@ -45,11 +53,15 @@ async function signPermit(signer, spender, amount) {
 
   /* Auto-detect domain by hashing each candidate and comparing to on-chain value.
      Candidates in priority order:
-       1. name + version='1' + chainId + verifyingContract  (most custom tokens)
-       2. name + version='2' + chainId + verifyingContract  (Circle USDC)
-       3. name + chainId + verifyingContract                (no-version variant)
+       1. Actual on-chain version() string — most reliable if available
+       2. version='1'  (most custom tokens)
+       3. version='2'  (Circle USDC on mainnet)
+       4. no version field (some minimal ERC-2612 implementations)
   */
   const candidates = [
+    ...(onChainVersion !== null
+      ? [{ name, version: onChainVersion, chainId: CHAIN_ID, verifyingContract: ADDRESSES.USDC }]
+      : []),
     { name, version: '1', chainId: CHAIN_ID, verifyingContract: ADDRESSES.USDC },
     { name, version: '2', chainId: CHAIN_ID, verifyingContract: ADDRESSES.USDC },
     { name,               chainId: CHAIN_ID, verifyingContract: ADDRESSES.USDC },
@@ -68,8 +80,10 @@ async function signPermit(signer, spender, amount) {
         }
       } catch (_) {}
     }
-    if (domain === candidates[0]) {
+    if (domain === candidates[0] && onChainVersion === null) {
       console.warn('[signPermit] ⚠ no candidate matched on-chain separator — using version=1 as default')
+    } else if (domain === candidates[0] && onChainVersion !== null) {
+      console.log('[signPermit] using on-chain version as domain (matched or first candidate)')
     }
   }
 
@@ -157,19 +171,73 @@ async function waitTx(tx) {
 }
 
 /* ── Decode simulation error ─────────────────────────────────────────── */
-/* When a contract reverts with a custom error and the ABI lacks the      */
-/* error definition, ethers returns raw bytes. Extract the 4-byte         */
-/* selector so it can be identified and added to the ABI.                */
+/* Returns the most human-readable error name/reason available.           */
+/* Priority: ethers-decoded custom error name → string revert reason →    */
+/* raw 4-byte selector (fallback when the error ABI is incomplete).       */
 function decodeSimError(err) {
+  /* ethers v6: if the error ABI is present, err.revert = { name, args } */
+  if (err?.revert?.name) return err.revert.name
   const data = err?.data ?? err?.error?.data ?? ''
   if (typeof data === 'string' && data.length >= 10 && data !== '0x') {
     const selector = data.slice(0, 10)
     console.error('[decodeSimError] raw revert data:', data)
-    console.error('[decodeSimError] 4-byte selector:', selector, '— add matching error() to ABI_CROSS_MARGIN')
+    console.error('[decodeSimError] 4-byte selector:', selector)
     if (err?.reason) return err.reason
     return `Contract error ${selector} — see console for raw revert data`
   }
   return err?.reason ?? err?.shortMessage ?? err?.message ?? 'Simulation reverted'
+}
+
+/* ── Receipt log parsers ─────────────────────────────────────────────── */
+const _coreIface = new Interface([
+  'event Opened(uint256 indexed posId, address indexed owner, bytes32 indexed key, bool isLong, uint8 leverage, uint256 collateral)',
+  'event Closed(uint256 indexed posId, int256 pnl)',
+])
+const _erc20Iface = new Interface([
+  'event Transfer(address indexed from, address indexed to, uint256 value)',
+])
+
+function parseOpenPosId(receipt) {
+  for (const log of receipt?.logs ?? []) {
+    try {
+      const parsed = _coreIface.parseLog(log)
+      if (parsed?.name === 'Opened') {
+        const posId = Number(parsed.args.posId)
+        console.log('[parseOpenPosId] Opened event: posId', posId)
+        return posId
+      }
+    } catch (_) {}
+  }
+  console.warn('[parseOpenPosId] Opened event not found in receipt')
+  return null
+}
+
+/* Parse on-chain PnL and USDC payout from a close receipt.
+   pnl from Closed(posId, int256 pnl) — 18-decimal int256.
+   payout from USDC Transfer(vault → trader) — 18-decimal uint256. */
+function parseCloseReceipt(receipt, traderAddr) {
+  let pnl = null, payout = null
+  for (const log of receipt?.logs ?? []) {
+    try {
+      const parsed = _coreIface.parseLog(log)
+      if (parsed?.name === 'Closed') {
+        pnl = Number(parsed.args.pnl) / 1e18
+        console.log('[parseCloseReceipt] Closed event: posId', parsed.args.posId?.toString(), '| pnl', pnl)
+      }
+    } catch (_) {}
+    if (traderAddr) {
+      try {
+        const parsed = _erc20Iface.parseLog(log)
+        if (parsed?.name === 'Transfer' &&
+            parsed.args.to?.toLowerCase() === traderAddr.toLowerCase()) {
+          payout = Number(parsed.args.value) / 1e18
+          console.log('[parseCloseReceipt] USDC Transfer to trader:', payout)
+        }
+      } catch (_) {}
+    }
+  }
+  console.log('[parseCloseReceipt] summary — pnl:', pnl, '| USDC payout:', payout)
+  return { pnl, payout }
 }
 
 /* ── Classify simulation failure: infrastructure vs contract revert ───── */
@@ -241,49 +309,75 @@ export function useTrading({ onSuccess, onError } = {}) {
       setStep('Fetching oracle price…')
       const { updateData, fee } = await getPythData(signer)
 
-      /* ── Full pre-submit diagnostics ── */
       console.log('[openPosition] ── PRE-SUBMIT ──')
-      console.log('  owner             :', owner)
-      console.log('  spender           :', ADDRESSES.PERP_VAULT, '(PERP_VAULT)')
-      console.log('  nonce             :', nonce.toString())
-      console.log('  deadline          :', deadline)
-      console.log('  signed value      :', collateralRaw.toString(), '(', collateralUsd, 'USDC )')
-      console.log('  chainId           :', CHAIN_ID)
-      console.log('  token name        :', domain.name)
-      console.log('  version           :', domain.version ?? '(none)')
-      console.log('  verifyingContract :', domain.verifyingContract)
-      console.log('  tx target         :', ADDRESSES.PERP_CORE, '(PERP_CORE)')
-      console.log('  function          : openWithPermitAndPriceUpdate')
-      console.log('  sym / key         :', sym, market.key)
-      console.log('  isLong            :', isLong)
-      console.log('  leverage          :', Number(leverage))
-      console.log('  reduceOnly        : false')
-      console.log('  v / r / s         :', v, r.slice(0, 18) + '…', s.slice(0, 18) + '…')
-      console.log('  updateData        :', updateData.length, 'VAAs, first 32B:', updateData[0]?.slice(0, 66))
-      console.log('  pythFee           :', fee.toString(), 'wei')
+      console.log('  owner     :', owner, '| spender:', ADDRESSES.PERP_VAULT, '(PERP_VAULT)')
+      console.log('  nonce     :', nonce.toString(), '| deadline:', deadline)
+      console.log('  value     :', collateralRaw.toString(), '(', collateralUsd, 'USDC)')
+      console.log('  domain    :', JSON.stringify({ ...domain, chainId: Number(domain.chainId) }))
+      console.log('  key/long/lev:', market.key, isLong, Number(leverage))
+      console.log('  v / r / s :', v, r.slice(0, 18) + '…', s.slice(0, 18) + '…')
 
-      const core = new Contract(ADDRESSES.PERP_CORE, ABI_PERP_CORE, signer)
-      /* leverage must be a plain integer — ABI declares uint8 */
-      const callArgs = [
-        market.key, isLong, Number(leverage), collateralRaw, false,
-        deadline, v, r, s, updateData,
-      ]
-      console.log('  callArgs   :', market.key, isLong, Number(leverage), collateralRaw.toString(), false, deadline)
-      console.log('  ──────────────────────────────────────────────────────')
+      const core     = new Contract(ADDRESSES.PERP_CORE, ABI_PERP_CORE, signer)
+      const callArgs = [market.key, isLong, Number(leverage), collateralRaw, false, deadline, v, r, s, updateData]
 
-      /* Diagnostic simulation only — never blocks submission */
-      core.openWithPermitAndPriceUpdate.staticCall(...callArgs, { value: fee, from: owner })
-        .then(() => console.log('[openPosition] simulation PASSED ✓'))
-        .catch((simErr) => {
-          const reason = simErr.reason ?? simErr.shortMessage ?? simErr.message ?? 'unknown revert'
-          console.warn('[openPosition] simulation diagnostic:', String(reason).split(' (action=')[0].slice(0, 120), simErr)
-        })
+      /* Blocking simulation — surfaces actual revert reason before broadcasting. */
+      setStep('Simulating…')
+      try {
+        await core.openWithPermitAndPriceUpdate.staticCall(...callArgs, { value: fee, from: owner })
+        console.log('[openPosition] simulation PASSED ✓')
+      } catch (simErr) {
+        if (isInfraError(simErr)) {
+          console.warn('[openPosition] simulation skipped (infra) — submitting anyway:', simErr?.message)
+        } else {
+          throw new Error(decodeSimError(simErr))
+        }
+      }
+
+      /* Log VAA price just before submit — this is the price the contract will see. */
+      const priceAtSubmit = getCurrentPrice(sym)
+      console.log('[openPosition] ── PRICE AUDIT (pre-submit) ──')
+      console.log('  sym / direction   :', sym, isLong ? 'LONG' : 'SHORT')
+      console.log('  Hermes/VAA price  :', priceAtSubmit?.price, '(age:', priceAtSubmit?.publishTime ? Math.floor(Date.now()/1000) - priceAtSubmit.publishTime + 's)' : 'n/a)')
+      console.log('  collateral / lev  :', collateralUsd, '/', Number(leverage), '× → notional', collateralUsd * Number(leverage))
 
       setStep(`Submitting ${isLong ? 'Long' : 'Short'}…`)
       const tx      = await core.openWithPermitAndPriceUpdate(...callArgs, { value: fee })
       setStep('Confirming on Base…')
       const receipt = await waitTx(tx)
-      return { hash: tx.hash, receipt }
+      const openedPosId = parseOpenPosId(receipt)
+
+      /* Non-blocking post-open audit: compare stored entry vs mark prices. */
+      if (openedPosId != null) {
+        const rp2 = getReadProvider()
+        if (rp2) {
+          const store2 = new Contract(ADDRESSES.PERP_STORE, ABI_PERP_STORE, rp2)
+          const cfg2   = new Contract(ADDRESSES.PERP_CONFIG, ABI_PERP_CONFIG, rp2)
+          Promise.all([
+            store2.getPosition(openedPosId),
+            cfg2.getMarkPrice(market.key, true),
+            cfg2.getMarkPrice(market.key, false),
+            cfg2.feeBps(),
+          ]).then(([storedPos, markLongRaw, markShortRaw, feeBpsRaw]) => {
+            const entry  = Number(storedPos.entryPrice) / 1e18
+            const mL     = Number(markLongRaw)  / 1e18
+            const mS     = Number(markShortRaw) / 1e18
+            const hNow   = getCurrentPrice(sym)
+            console.log('[openPosition] ── POST-OPEN PRICE AUDIT ──')
+            console.log('  posId                   :', openedPosId)
+            console.log('  stored entryPrice        :', entry)
+            console.log('  Hermes price now         :', hNow?.price)
+            console.log('  getMarkPrice(key, true)  :', mL, '← long mark')
+            console.log('  getMarkPrice(key, false) :', mS, '← short mark')
+            console.log('  markLong - markShort     :', (mL - mS).toFixed(6), '=', ((mL - mS) / (mS || 1) * 100).toFixed(4) + '% spread')
+            console.log('  entry vs Hermes          :', hNow?.price ? (entry - hNow.price).toFixed(6) : 'n/a', 'diff')
+            console.log('  entry vs markLong        :', (entry - mL).toFixed(6), 'diff')
+            console.log('  entry vs markShort       :', (entry - mS).toFixed(6), 'diff')
+            console.log('  feeBps                   :', Number(feeBpsRaw), '=', (Number(feeBpsRaw) / 100).toFixed(3) + '%')
+          }).catch((e) => console.warn('[openPosition] post-open audit read failed:', e?.message))
+        }
+      }
+
+      return { hash: tx.hash, receipt, posId: openedPosId }
     })
   }, [run])
 
@@ -352,13 +446,20 @@ export function useTrading({ onSuccess, onError } = {}) {
 
       setStep('Fetching oracle price…')
       const { updateData, fee } = await getPythData(signer)
+      const priceAtClose = getCurrentPrice(sym)
+      console.log('[closePosition] ── PRICE AUDIT (pre-close) ──')
+      console.log('  posId            :', posId)
+      console.log('  sym              :', sym)
+      console.log('  Hermes/VAA price :', priceAtClose?.price, '(this will be the close price)')
+      console.log('  publishTime age  :', priceAtClose?.publishTime ? Math.floor(Date.now()/1000) - priceAtClose.publishTime + 's' : 'n/a')
 
       setStep('Submitting close…')
       const core = new Contract(ADDRESSES.PERP_CORE, ABI_PERP_CORE, signer)
       const tx   = await core.closeWithPriceUpdate(posId, updateData, { value: fee })
       setStep('Confirming on Base…')
       const receipt = await waitTx(tx)
-      return { hash: tx.hash, receipt }
+      const { pnl, payout } = parseCloseReceipt(receipt, getAccount())
+      return { hash: tx.hash, receipt, pnl, payout }
     })
   }, [run])
 
@@ -526,7 +627,8 @@ export function useTrading({ onSuccess, onError } = {}) {
       const tx   = await core.partialCloseWithPriceUpdate(posId, deltaRaw, updateData, { value: fee })
       setStep('Confirming on Base…')
       const receipt = await waitTx(tx)
-      return { hash: tx.hash, receipt }
+      const { pnl, payout } = parseCloseReceipt(receipt, getAccount())
+      return { hash: tx.hash, receipt, pnl, payout }
     })
   }, [run])
 
@@ -538,14 +640,55 @@ export function useTrading({ onSuccess, onError } = {}) {
       const signer   = getSigner()
       if (!signer) throw new Error('Wallet not connected')
       const extraRaw = parseUnits(String(Number(collateralUsd).toFixed(18)), 18)
+      const owner    = await signer.getAddress()
       const cross    = new Contract(ADDRESSES.CROSS_MARGIN, ABI_CROSS_MARGIN, signer)
 
-      if (import.meta.env.DEV) {
-        console.log('[crossIncreasePosition] posId:', posId.toString(), '| extra:', extraRaw.toString(), '(', collateralUsd, 'USDC)')
+      console.log('[crossIncreasePosition] posId:', posId.toString(), '| extra:', extraRaw.toString(), '(', collateralUsd, 'USDC)')
+
+      /* increasePosition reads on-chain Pyth price — same StalePrice() risk as open/close. */
+      setStep('Simulating…')
+      let needsPythUpdate = false
+      try {
+        await cross.increasePosition.staticCall(posId, extraRaw, { from: owner })
+        console.log('[crossIncreasePosition] pre-Pyth simulation PASSED ✓')
+      } catch (simErr) {
+        if (isInfraError(simErr)) {
+          console.warn('[crossIncreasePosition] simulation skipped (infra):', simErr?.message)
+        } else {
+          const reason  = decodeSimError(simErr)
+          const rawData = simErr?.data ?? simErr?.error?.data ?? ''
+          const isStale = /stale|price.?age|too.?old|StalePrice/i.test(reason) ||
+                          /stale|price.?age|too.?old|StalePrice/i.test(simErr?.message ?? '') ||
+                          rawData.startsWith('0x19abf40e')
+          if (isStale) {
+            console.log('[crossIncreasePosition] StalePrice detected — will update Pyth and retry')
+            needsPythUpdate = true
+          } else {
+            throw new Error(reason)
+          }
+        }
+      }
+
+      if (needsPythUpdate) {
+        setStep('Updating oracle price…')
+        const { updateData, fee } = await getPythData(signer)
+        const pyth    = new Contract(ADDRESSES.PYTH, ABI_PYTH, signer)
+        const priceTx = await pyth.updatePriceFeeds(updateData, { value: fee })
+        setStep('Confirming oracle update…')
+        await waitTx(priceTx)
+        console.log('[crossIncreasePosition] Pyth price update confirmed ✓')
+
+        setStep('Re-simulating…')
+        try {
+          await cross.increasePosition.staticCall(posId, extraRaw, { from: owner })
+          console.log('[crossIncreasePosition] post-Pyth simulation PASSED ✓')
+        } catch (simErr2) {
+          if (!isInfraError(simErr2)) throw new Error(decodeSimError(simErr2))
+          console.warn('[crossIncreasePosition] post-Pyth simulation skipped (infra):', simErr2?.message)
+        }
       }
 
       setStep('Submitting increase…')
-      /* gasLimit skips eth_estimateGas, preventing rate-limit failures on MetaMask RPC */
       const tx      = await cross.increasePosition(posId, extraRaw, { gasLimit: 400_000 })
       setStep('Confirming on Base…')
       const receipt = await waitTx(tx)
@@ -565,25 +708,73 @@ export function useTrading({ onSuccess, onError } = {}) {
       const cross  = new Contract(ADDRESSES.CROSS_MARGIN, ABI_CROSS_MARGIN, signer)
 
       console.log('[crossOpenPosition] ── PRE-SUBMIT ──')
-      console.log('  owner     :', owner)
-      console.log('  market    :', market.key, '|', sym)
-      console.log('  isLong    :', isLong)
-      console.log('  leverage  :', Number(leverage))
-      console.log('  cRaw      :', cRaw.toString(), '(', collateralUsd, 'USDC)')
-      console.log('  contract  :', ADDRESSES.CROSS_MARGIN)
+      console.log('  owner    :', owner)
+      console.log('  market   :', market.key, '|', sym)
+      console.log('  isLong   :', isLong)
+      console.log('  leverage :', Number(leverage))
+      console.log('  cRaw     :', cRaw.toString(), '(', collateralUsd, 'USDC)')
+      console.log('  contract :', ADDRESSES.CROSS_MARGIN)
 
-      /* Non-blocking diagnostic simulation — never throws; tx is always submitted. */
-      const rp       = getReadProvider()
-      const crossSim = rp ? new Contract(ADDRESSES.CROSS_MARGIN, ABI_CROSS_MARGIN, rp) : cross
-      crossSim.openPosition.staticCall(market.key, isLong, Number(leverage), cRaw, false, { from: owner })
-        .then(() => console.log('[crossOpenPosition] simulation PASSED ✓'))
-        .catch((simErr) => {
-          const reason = decodeSimError(simErr)
-          console.warn('[crossOpenPosition] simulation diagnostic:', reason, simErr)
-        })
+      /* Account balance pre-check */
+      setStep('Checking account balance…')
+      try {
+        const [balance] = await cross.getAccount(owner)
+        console.log('[crossOpenPosition] account balance:', balance.toString(), '| required:', cRaw.toString())
+        if (balance < cRaw) {
+          throw new Error(
+            `Insufficient cross-margin balance: have ${(Number(balance) / 1e18).toFixed(4)} USDC, need ${(Number(cRaw) / 1e18).toFixed(4)} USDC — deposit more first.`
+          )
+        }
+      } catch (balErr) {
+        if (balErr.message.startsWith('Insufficient')) throw balErr
+        console.warn('[crossOpenPosition] getAccount failed, continuing:', balErr?.message)
+      }
+
+      /* Simulate first — StalePrice() = selector 0x19abf40e.
+         Any non-staleness revert is surfaced immediately without wasting a Pyth update tx. */
+      setStep('Simulating…')
+      let needsPythUpdate = false
+      try {
+        await cross.openPosition.staticCall(market.key, isLong, Number(leverage), cRaw, false, { from: owner })
+        console.log('[crossOpenPosition] pre-Pyth simulation PASSED ✓ — no oracle update needed')
+      } catch (simErr) {
+        if (isInfraError(simErr)) {
+          console.warn('[crossOpenPosition] simulation skipped (infra):', simErr?.message)
+        } else {
+          const reason  = decodeSimError(simErr)
+          const rawData = simErr?.data ?? simErr?.error?.data ?? ''
+          const isStale = /stale|price.?age|too.?old|StalePrice/i.test(reason) ||
+                          /stale|price.?age|too.?old|StalePrice/i.test(simErr?.message ?? '') ||
+                          rawData.startsWith('0x19abf40e')
+          if (isStale) {
+            console.log('[crossOpenPosition] StalePrice detected — will update Pyth and retry')
+            needsPythUpdate = true
+          } else {
+            throw new Error(reason)
+          }
+        }
+      }
+
+      if (needsPythUpdate) {
+        setStep('Updating oracle price…')
+        const { updateData, fee } = await getPythData(signer)
+        const pyth    = new Contract(ADDRESSES.PYTH, ABI_PYTH, signer)
+        const priceTx = await pyth.updatePriceFeeds(updateData, { value: fee })
+        setStep('Confirming oracle update…')
+        await waitTx(priceTx)
+        console.log('[crossOpenPosition] Pyth price update confirmed ✓')
+
+        setStep('Re-simulating…')
+        try {
+          await cross.openPosition.staticCall(market.key, isLong, Number(leverage), cRaw, false, { from: owner })
+          console.log('[crossOpenPosition] post-Pyth simulation PASSED ✓')
+        } catch (simErr2) {
+          if (!isInfraError(simErr2)) throw new Error(decodeSimError(simErr2))
+          console.warn('[crossOpenPosition] post-Pyth simulation skipped (infra):', simErr2?.message)
+        }
+      }
 
       setStep(`Submitting cross ${isLong ? 'Long' : 'Short'}…`)
-      /* gasLimit skips eth_estimateGas; args must be identical to simulation above */
       const tx      = await cross.openPosition(market.key, isLong, Number(leverage), cRaw, false, { gasLimit: 500_000 })
       setStep('Confirming on Base…')
       const receipt = await waitTx(tx)
@@ -605,18 +796,50 @@ export function useTrading({ onSuccess, onError } = {}) {
       console.log('  fractionBps :', fractionBps, '(', (fractionBps / 100).toFixed(0), '%)')
       console.log('  contract    :', ADDRESSES.CROSS_MARGIN)
 
-      /* Non-blocking diagnostic simulation — never throws; tx is always submitted. */
-      const rp2       = getReadProvider()
-      const crossSim2 = rp2 ? new Contract(ADDRESSES.CROSS_MARGIN, ABI_CROSS_MARGIN, rp2) : cross
-      crossSim2.closePosition.staticCall(posId, fractionBps, { from: owner })
-        .then(() => console.log('[crossClosePosition] simulation PASSED ✓'))
-        .catch((simErr) => {
-          const reason = decodeSimError(simErr)
-          console.warn('[crossClosePosition] simulation diagnostic:', reason, simErr)
-        })
+      /* closePosition reads on-chain Pyth price — same StalePrice() risk. */
+      setStep('Simulating…')
+      let needsPythUpdate = false
+      try {
+        await cross.closePosition.staticCall(posId, fractionBps, { from: owner })
+        console.log('[crossClosePosition] pre-Pyth simulation PASSED ✓')
+      } catch (simErr) {
+        if (isInfraError(simErr)) {
+          console.warn('[crossClosePosition] simulation skipped (infra):', simErr?.message)
+        } else {
+          const reason  = decodeSimError(simErr)
+          const rawData = simErr?.data ?? simErr?.error?.data ?? ''
+          const isStale = /stale|price.?age|too.?old|StalePrice/i.test(reason) ||
+                          /stale|price.?age|too.?old|StalePrice/i.test(simErr?.message ?? '') ||
+                          rawData.startsWith('0x19abf40e')
+          if (isStale) {
+            console.log('[crossClosePosition] StalePrice detected — will update Pyth and retry')
+            needsPythUpdate = true
+          } else {
+            throw new Error(reason)
+          }
+        }
+      }
+
+      if (needsPythUpdate) {
+        setStep('Updating oracle price…')
+        const { updateData, fee } = await getPythData(signer)
+        const pyth    = new Contract(ADDRESSES.PYTH, ABI_PYTH, signer)
+        const priceTx = await pyth.updatePriceFeeds(updateData, { value: fee })
+        setStep('Confirming oracle update…')
+        await waitTx(priceTx)
+        console.log('[crossClosePosition] Pyth price update confirmed ✓')
+
+        setStep('Re-simulating…')
+        try {
+          await cross.closePosition.staticCall(posId, fractionBps, { from: owner })
+          console.log('[crossClosePosition] post-Pyth simulation PASSED ✓')
+        } catch (simErr2) {
+          if (!isInfraError(simErr2)) throw new Error(decodeSimError(simErr2))
+          console.warn('[crossClosePosition] post-Pyth simulation skipped (infra):', simErr2?.message)
+        }
+      }
 
       setStep('Submitting close…')
-      /* gasLimit skips eth_estimateGas; args identical to simulation */
       const tx      = await cross.closePosition(posId, fractionBps, { gasLimit: 500_000 })
       setStep('Confirming on Base…')
       const receipt = await waitTx(tx)

@@ -50,10 +50,22 @@ async function fetchOnChainData() {
     await Promise.allSettled(
       MARKETS.map(async (m) => {
         try {
-          const markRaw = await cfg.getMarkPrice(m.key, true)  /* forLong=true for mid-price reference */
-          if (markRaw) {
-            const mark = Number(markRaw) / 1e18
-            if (mark > 0) _prices[m.sym] = { ..._prices[m.sym], mark }
+          /* Fetch both directional mark prices in parallel.
+             forLong=true  → price applied to long  positions (entry/PnL for longs)
+             forLong=false → price applied to short positions (entry/PnL for shorts)
+             If these differ the protocol has a bid/ask spread; we expose both so
+             PositionsPanel can use the direction-matching price for accurate PnL. */
+          const [markLongRaw, markShortRaw] = await Promise.all([
+            cfg.getMarkPrice(m.key, true),
+            cfg.getMarkPrice(m.key, false),
+          ])
+          const markLong  = markLongRaw  ? Number(markLongRaw)  / 1e18 : 0
+          const markShort = markShortRaw ? Number(markShortRaw) / 1e18 : 0
+          if (markLong > 0 || markShort > 0) {
+            _prices[m.sym] = { ..._prices[m.sym], markLong, markShort }
+            if (markLong > 0 && markShort > 0 && Math.abs(markLong - markShort) / markShort > 0.0001) {
+              console.log(`[usePrices] ${m.sym} mark spread: long=${markLong.toFixed(6)} short=${markShort.toFixed(6)} diff=${((markLong - markShort) / markShort * 100).toFixed(4)}%`)
+            }
           }
         } catch (e) {
           console.warn(`[usePrices] ${m.sym} mark fetch failed:`, e?.message ?? e)
@@ -94,7 +106,33 @@ export async function fetchVaas(pythIds) {
   const vaas = (data?.binary?.data || []).map((d) => '0x' + d)
   if (!vaas.length) throw new Error('Hermes returned empty VAA list — cannot update oracle price')
   _vaaCache = { data: vaas, ts: now }
+  /* Sync the display price cache with the exact price embedded in this VAA.
+     Without this, _prices[sym].price (from fetchHermesPrices) and the VAA
+     price used for on-chain entry can be up to 16 seconds apart, creating a
+     visible "instant PnL" in the positions table that doesn't reflect reality
+     at the moment of submission.  After this call, the displayed mark and the
+     entry price the contract will store are from the same Hermes response. */
+  const parsed = data?.parsed ?? []
+  if (parsed.length > 0) {
+    for (const entry of parsed) {
+      const sym = Object.entries(PYTH_IDS).find(([, id]) => entry.id === id.slice(2))?.[0]
+      if (!sym) continue
+      const { price, expo, publish_time } = entry.price
+      const priceNum = Number(price) * Math.pow(10, Number(expo))
+      if (priceNum > 0) {
+        console.log(`[fetchVaas] VAA price for ${sym}: ${priceNum} (publishTime ${publish_time}, age ${Math.floor(Date.now()/1000) - publish_time}s)`)
+        _prices[sym] = { ..._prices[sym], price: priceNum, publishTime: publish_time }
+      }
+    }
+    notify()
+  }
   return vaas
+}
+
+/* Snapshot of module-level price cache for a single symbol.
+   Used by useTrading for diagnostic logging at trade time. */
+export function getCurrentPrice(sym) {
+  return _prices[sym] ? { ..._prices[sym] } : null
 }
 
 export function usePrices() {

@@ -13,8 +13,15 @@ export function PortfolioSummary({ positions, prices, summary, historyLoading })
     let sum = 0
     let allPriced = true
     for (const pos of positions) {
-      const sym  = MARKETS.find((m) => m.key === pos.assetKey)?.sym
-      const mark = sym ? (prices[sym]?.price || prices[sym]?.mark) : null
+      const sym = MARKETS.find((m) => m.key === pos.assetKey)?.sym
+      const p   = sym ? prices[sym] : null
+      /* Direction-aware mark — same logic as getMarkForPos in PositionsPanel:
+         longs close at bid (markShort), shorts close at ask (markLong). */
+      const mark = p
+        ? (pos.isLong
+            ? (p.markShort || p.price || p.markLong || 0)
+            : (p.markLong  || p.price || p.markShort || 0))
+        : null
       if (!mark) { allPriced = false; continue }
       sum += calcPnlUsd(pos.entryPrice, mark, pos.isLong, pos.size)
     }

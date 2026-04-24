@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo, useEffect } from 'react'
+import { useState, useCallback, useMemo, useEffect, useRef } from 'react'
 import { useTheme }     from '@/hooks/useTheme'
 import { useWallet }    from '@/hooks/useWallet'
 import { usePrices }    from '@/hooks/usePrices'
@@ -7,7 +7,7 @@ import { useTrading }   from '@/hooks/useTrading'
 import { usePoints }    from '@/hooks/usePoints'
 import { useVaultStats } from '@/hooks/useVaultStats'
 import { useHistory }    from '@/hooks/useHistory'
-import { fmtUsdc, fmtUsdcCompact } from '@/utils/format'
+import { fmtUsdc, fmtUsdcCompact, calcPnlUsd } from '@/utils/format'
 import { MARKETS } from '@/config/markets'
 
 import { writeConfirmedTxToSupabase } from '@/services/historyService'
@@ -71,6 +71,14 @@ export default function App() {
   /* ── points ───────────────────────────────────────────────────── */
   const pts = usePoints()
 
+  /* ── wallet USDC balance refresh key ────────────────────────── */
+  const [balanceKey, setBalanceKey] = useState(0)
+  const bumpBalance = useCallback(() => setBalanceKey((k) => k + 1), [])
+
+  /* Stable ref to refresh so setTimeout closures always call latest version */
+  const refreshRef = useRef(refresh)
+  useEffect(() => { refreshRef.current = refresh }, [refresh])
+
   /* ── local fast-path tx state ────────────────────────────────── */
   const [localTxs, setLocalTxs] = useState([])
 
@@ -95,9 +103,11 @@ export default function App() {
     try {
       if (type === 'open') {
         const isCross = mode === 'Cross'
-        const { hash, receipt } = isCross
+        const openResult = isCross
           ? await crossOpenPosition({ sym: s, isLong, leverage, collateralUsd })
           : await openPosition({ sym: s, isLong, leverage, collateralUsd })
+        const { hash, receipt } = openResult
+        const openedPosId = openResult.posId ?? null
         toast.success(`Opened ${isCross ? 'Cross ' : ''}${isLong ? 'Long' : 'Short'} ${s} · ${th(hash)}`)
         pts.onOpen(hash, s, collateralUsd)
         const entry = {
@@ -105,11 +115,13 @@ export default function App() {
           blockNumber: receipt?.blockNumber ?? 0, ts: Math.floor(Date.now() / 1000),
           sym: s, isLong, leverage, collateral: collateralUsd,
           size: collateralUsd * leverage, mode: isCross ? 'cross' : 'isolated',
-          pnl: null, amount: null, label: null, entryPrice: null, posId: null,
+          pnl: null, amount: null, label: null, entryPrice: null, posId: openedPosId != null ? String(openedPosId) : null,
         }
         setLocalTxs((prev) => [entry, ...prev])
         writeConfirmedTxToSupabase(entry, account)
-        setTimeout(refresh, 3000)
+        if (!isCross) bumpBalance()
+        setTimeout(() => refreshRef.current(), 3000)
+        setTimeout(() => refreshRef.current(), 8000)
         setTimeout(histReload, 2000)
       } else if (type === 'limit') {
         const { hash, receipt } = await createLimitOrder({ sym: s, isLong, leverage, collateralUsd, triggerPrice })
@@ -123,21 +135,31 @@ export default function App() {
         }
         setLocalTxs((prev) => [entry, ...prev])
         writeConfirmedTxToSupabase(entry, account)
-        setTimeout(refresh, 3000)
+        setTimeout(() => refreshRef.current(), 3000)
         setTimeout(histReload, 2000)
       }
     } catch (e) {
       toast.error(txErr(e, 'Transaction failed'))
     }
-  }, [openPosition, crossOpenPosition, createLimitOrder, pts, refresh, histReload, account])
+  }, [openPosition, crossOpenPosition, createLimitOrder, pts, refresh, histReload, account, bumpBalance])
 
   /* ── close handler ───────────────────────────────────────────── */
   const handleClose = useCallback(async (posId, pct = 100) => {
     const pos = positions.find((p) => p.id === posId)
     const isCrossPos = crossAccount?.posIds?.includes(posId)
     const sym = MARKETS.find((m) => m.key === pos?.assetKey)?.sym ?? 'position'
+    /* Capture direction-aware mark at the instant the user initiates close */
+    const pSym = sym !== 'position' ? prices[sym] : null
+    const markAtClose = pSym
+      ? (pos?.isLong
+          ? (pSym.markShort || pSym.price || 0)
+          : (pSym.markLong  || pSym.price || 0))
+      : 0
+    const uiEstPnl = pos && markAtClose && pos.entryPrice
+      ? calcPnlUsd(pos.entryPrice, markAtClose, pos.isLong, pos.size)
+      : null
     try {
-      let hash, receipt
+      let hash, receipt, closePnl = null, closePayout = null
       if (isCrossPos) {
         /* cross-margin close — fractionBps: 10000 = full, else partial */
         const fractionBps = Math.round(pct * 100)
@@ -145,11 +167,21 @@ export default function App() {
       } else if (pct < 100 && pos?.collateral) {
         /* partial close — reduce collateral by requested % */
         const collateralDelta = pos.collateral * pct / 100
-        ;({ hash, receipt } = await partialClosePosition({ posId, collateralDelta }))
+        ;({ hash, receipt, pnl: closePnl, payout: closePayout } = await partialClosePosition({ posId, collateralDelta }))
       } else {
         /* full isolated close */
-        ;({ hash, receipt } = await closePosition({ posId, sym: sym !== 'position' ? sym : 'BTC' }))
+        ;({ hash, receipt, pnl: closePnl, payout: closePayout } = await closePosition({ posId, sym: sym !== 'position' ? sym : 'BTC' }))
       }
+      /* Close diagnostics: compare UI estimate vs on-chain truth */
+      console.log('[handleClose] ── PRICING AUDIT ──')
+      console.log('  posId         :', posId)
+      console.log('  entry price   :', pos?.entryPrice)
+      console.log('  mark at close :', markAtClose, `(${pos?.isLong ? 'markShort/bid' : 'markLong/ask'})`)
+      console.log('  UI est. PnL   :', uiEstPnl)
+      console.log('  on-chain PnL  :', closePnl, '(from Closed event)')
+      console.log('  USDC payout   :', closePayout, '(from Transfer event)')
+      console.log('  collateral    :', pos?.collateral)
+      console.log('  expected out  :', pos?.collateral != null && closePnl != null ? pos.collateral + closePnl : '(no on-chain PnL)')
       toast.success(`${pct < 100 ? `Partially closed (${pct}%)` : 'Closed'} ${sym} · ${th(hash)}`)
       if (pos) pts.onClose(posId, sym, 0)
       const entry = {
@@ -158,16 +190,19 @@ export default function App() {
         sym, isLong: pos?.isLong ?? null, leverage: pos?.leverage ?? null,
         collateral: pos?.collateral ?? null, size: pos?.size ?? null,
         posId: String(posId), mode: isCrossPos ? 'cross' : 'isolated',
-        pnl: null, amount: null, label: null, entryPrice: null,
+        pnl: closePnl, amount: closePayout, label: null, entryPrice: pos?.entryPrice ?? null,
       }
       setLocalTxs((prev) => [entry, ...prev])
       writeConfirmedTxToSupabase(entry, account)
-      setTimeout(refresh, 3000)
+      bumpBalance()
+      setTimeout(bumpBalance, 5000)
+      setTimeout(() => refreshRef.current(), 3000)
+      setTimeout(() => refreshRef.current(), 8000)
       setTimeout(histReload, 2000)
     } catch (e) {
       toast.error(txErr(e, 'Close failed'))
     }
-  }, [closePosition, partialClosePosition, crossClosePosition, crossAccount, positions, pts, refresh, histReload, account])
+  }, [closePosition, partialClosePosition, crossClosePosition, crossAccount, positions, prices, pts, refresh, histReload, account, bumpBalance])
 
   /* ── SL/TP handler ───────────────────────────────────────────── */
   const handleSlTp = useCallback(async (posId, type, price) => {
@@ -198,11 +233,13 @@ export default function App() {
         ;({ hash } = await increasePosition({ posId, sym: sym || 'BTC', collateralUsd }))
       }
       toast.success(`Position increased · ${th(hash)}`)
-      setTimeout(refresh, 3000)
+      if (!isCrossPos) bumpBalance()
+      setTimeout(() => refreshRef.current(), 3000)
+      setTimeout(() => refreshRef.current(), 8000)
     } catch (e) {
       toast.error(e?.reason || e?.message || 'Increase failed')
     }
-  }, [increasePosition, crossIncreasePosition, crossAccount, refresh])
+  }, [increasePosition, crossIncreasePosition, crossAccount, refresh, bumpBalance])
 
   /* ── cancel order ────────────────────────────────────────────── */
   const handleCancelOrder = useCallback(async (orderId) => {
@@ -242,12 +279,13 @@ export default function App() {
       }
       setLocalTxs((prev) => [entry, ...prev])
       writeConfirmedTxToSupabase(entry, account)
-      setTimeout(refresh, 3000)
+      bumpBalance()
+      setTimeout(() => refreshRef.current(), 3000)
       setTimeout(histReload, 2000)
     } catch (e) {
       toast.error(txErr(e, 'Deposit failed'))
     }
-  }, [crossDeposit, refresh, histReload, account])
+  }, [crossDeposit, refresh, histReload, account, bumpBalance])
 
   const handleCrossWithdraw = useCallback(async (amountUsd) => {
     try {
@@ -261,12 +299,13 @@ export default function App() {
       }
       setLocalTxs((prev) => [entry, ...prev])
       writeConfirmedTxToSupabase(entry, account)
-      setTimeout(refresh, 3000)
+      bumpBalance()
+      setTimeout(() => refreshRef.current(), 3000)
       setTimeout(histReload, 2000)
     } catch (e) {
       toast.error(txErr(e, 'Withdraw failed'))
     }
-  }, [crossWithdraw, refresh, histReload, account])
+  }, [crossWithdraw, refresh, histReload, account, bumpBalance])
 
   /* ── faucet ──────────────────────────────────────────────────── */
   const handleFaucet = useCallback(async () => {
@@ -313,7 +352,7 @@ export default function App() {
             sym={sym} prices={prices} account={account}
             isConnecting={isConnecting} onTrade={handleTrade}
             onConnect={connect} pending={pending} step={step}
-            crossAccount={crossAccount}
+            crossAccount={crossAccount} balanceKey={balanceKey}
           />
           <div style={{ padding: '0 14px 14px' }}>
             <OICard sym={sym} oi={oi} />
@@ -555,7 +594,7 @@ export default function App() {
                   sym={sym} prices={prices} account={account}
                   isConnecting={isConnecting} onTrade={handleTrade}
                   onConnect={connect} pending={pending} step={step}
-                  crossAccount={crossAccount}
+                  crossAccount={crossAccount} balanceKey={balanceKey}
                 />
               )}
             </div>

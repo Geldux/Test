@@ -120,6 +120,8 @@ export const ABI_ORDER_MANAGER = [
 
 /* ── CrossMarginManager ABI ───────────────────────────────────────────── */
 export const ABI_CROSS_MARGIN = [
+  /* Custom errors — allows ethers to decode revert.name automatically */
+  'error StalePrice()',
   /* Deposits / withdrawals */
   'function deposit(uint256 amt)',
   'function depositWithPermit(uint256 amt, uint256 deadline, uint8 v, bytes32 r, bytes32 s)',

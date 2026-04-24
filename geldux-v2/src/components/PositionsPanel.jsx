@@ -9,11 +9,27 @@ function symFromKey(assetKey) {
 
 const ORDER_TYPE_LABEL = { 0: 'Limit', 1: 'Stop-Loss', 2: 'Take-Profit' }
 
+/* Direction-aware mark price for accurate PnL display.
+   Closing a long  → receives the short/bid side price (markShort).
+   Closing a short → pays     the long/ask  side price (markLong).
+   Falls back to Hermes mid when directional marks are unavailable.
+   If markLong ≈ markShort the protocol has no spread; result is identical. */
+function getMarkForPos(pos, prices) {
+  const sym = symFromKey(pos.assetKey)
+  const p   = prices[sym]
+  if (!p) return pos.entryPrice || 0
+  /* For a long being closed (selling), use the bid/short mark.
+     For a short being closed (buying), use the ask/long mark.
+     Fall through to Hermes mid price as the final fallback. */
+  if (pos.isLong) return p.markShort || p.price || p.markLong || pos.entryPrice || 0
+  return               p.markLong  || p.price || p.markShort || pos.entryPrice || 0
+}
+
 /* ── Close / Partial-close sheet ───────────────────────────────── */
 function CloseSheet({ pos, prices, onClose, onCancel, pending }) {
   const [pct, setPct] = useState(100)
   const sym  = symFromKey(pos.assetKey)
-  const mark = prices[sym]?.price || prices[sym]?.mark || pos.entryPrice
+  const mark = getMarkForPos(pos, prices)
   const pnl  = calcPnlUsd(pos.entryPrice, mark, pos.isLong, pos.size)
   const est  = pnl * (pct / 100)
 
@@ -77,7 +93,7 @@ function CloseSheet({ pos, prices, onClose, onCancel, pending }) {
 /* ── Stop-Loss / Take-Profit sheet ──────────────────────────────── */
 function SlTpSheet({ pos, prices, type, onSubmit, onCancel, pending }) {
   const sym  = symFromKey(pos.assetKey)
-  const mark = prices[sym]?.price || prices[sym]?.mark || pos.entryPrice
+  const mark = getMarkForPos(pos, prices)
   const def  = type === 'sl'
     ? (pos.isLong ? mark * 0.95 : mark * 1.05).toFixed(2)
     : (pos.isLong ? mark * 1.10 : mark * 0.90).toFixed(2)
@@ -238,7 +254,7 @@ export function DesktopPositionsPanel({
                   <tbody>
                     {positions.map((pos) => {
                       const sym    = symFromKey(pos.assetKey)
-                      const mark   = prices[sym]?.price || prices[sym]?.mark || pos.entryPrice
+                      const mark   = getMarkForPos(pos, prices)
                       const pnl    = calcPnlUsd(pos.entryPrice, mark, pos.isLong, pos.size)
                       const liq    = estLiqPrice(pos.entryPrice, pos.leverage, pos.isLong)
                       const isCross = crossAccount?.posIds?.includes(pos.id)
@@ -352,7 +368,7 @@ export function MobilePositionsList({ positions, orders = [], prices, loading, o
       {positions.length === 0 && <Empty msg="No open positions" />}
       {positions.map((pos) => {
         const sym     = symFromKey(pos.assetKey)
-        const mark    = prices[sym]?.price || prices[sym]?.mark || pos.entryPrice
+        const mark    = getMarkForPos(pos, prices)
         const pnl     = calcPnlUsd(pos.entryPrice, mark, pos.isLong, pos.size)
         const liq     = estLiqPrice(pos.entryPrice, pos.leverage, pos.isLong)
         const open    = expanded === pos.id

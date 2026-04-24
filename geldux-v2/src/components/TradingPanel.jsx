@@ -1,12 +1,12 @@
 import { useState, useEffect } from 'react'
 import { Contract, formatUnits } from 'ethers'
 import { MARKETS, LEVERAGE_MARKS } from '@/config/markets'
-import { ADDRESSES, ABI_USDC } from '@/config/contracts'
+import { ADDRESSES, ABI_USDC, ABI_PERP_CONFIG } from '@/config/contracts'
 import { fmtPriceRaw, fmtUsdc, estLiqPrice } from '@/utils/format'
 import { getProvider, getReadProvider } from '@/hooks/useWallet'
 
 /* ── USDC balance hook ──────────────────────────────────────────── */
-function useUsdcBalance(account) {
+function useUsdcBalance(account, refreshKey) {
   const [bal, setBal] = useState(null)
   useEffect(() => {
     if (!account) { setBal(null); return }
@@ -29,15 +29,33 @@ function useUsdcBalance(account) {
     load()
     const id = setInterval(load, 30_000)
     return () => { cancelled = true; clearInterval(id) }
-  }, [account])
+  }, [account, refreshKey])
   return bal
+}
+
+/* ── On-chain feeBps hook ───────────────────────────────────────── */
+function useFeeBps() {
+  const [feeBps, setFeeBps] = useState(45) /* 45 bps = 0.045% default */
+  useEffect(() => {
+    const rp = getReadProvider()
+    if (!rp) return
+    new Contract(ADDRESSES.PERP_CONFIG, ABI_PERP_CONFIG, rp)
+      .feeBps()
+      .then((raw) => {
+        const bps = Number(raw)
+        console.log('[TradingPanel] on-chain feeBps:', bps, '=', (bps / 100).toFixed(3) + '%')
+        if (bps >= 0) setFeeBps(bps)
+      })
+      .catch((e) => console.warn('[TradingPanel] feeBps() read failed — using default 45 bps:', e?.message))
+  }, [])
+  return feeBps
 }
 
 const ORDER_TYPES  = ['Market', 'Limit']
 const MARGIN_MODES = ['Isolated', 'Cross']
 
 /* ── Main component ─────────────────────────────────────────────── */
-export function TradingPanel({ sym, prices, account, isConnecting, onTrade, onConnect, pending, step, crossAccount }) {
+export function TradingPanel({ sym, prices, account, isConnecting, onTrade, onConnect, pending, step, crossAccount, balanceKey = 0 }) {
   const [mode,       setMode]       = useState('Isolated') // Isolated | Cross
   const [orderType,  setOrderType]  = useState('Market')   // Market | Limit
   const [side,       setSide]       = useState('long')     // long | short
@@ -45,20 +63,26 @@ export function TradingPanel({ sym, prices, account, isConnecting, onTrade, onCo
   const [limitPrice, setLimitPrice] = useState('')
   const [leverage,   setLeverage]   = useState(10)
 
-  const usdcBal   = useUsdcBalance(account)
+  const usdcBal   = useUsdcBalance(account, balanceKey)
+  const feeBps    = useFeeBps()
   const isCross   = mode === 'Cross'
   /* Cross mode: balance = deposited cross-margin balance, not wallet */
   const crossBal  = crossAccount?.freeMargin ?? crossAccount?.balance ?? null
   const activeBal = isCross ? crossBal : usdcBal
 
-  const market    = MARKETS.find((m) => m.sym === sym) || MARKETS[0]
-  const markPrice = prices[sym]?.price || prices[sym]?.mark || 0
+  const market      = MARKETS.find((m) => m.sym === sym) || MARKETS[0]
+  /* displayMark: Hermes mid for visual reference (limit price placeholder, chart) */
+  const displayMark = prices[sym]?.price || 0
+  /* tradingMark: direction-aware contract mark for entry/liq price preview */
+  const tradingMark = side === 'long'
+    ? (prices[sym]?.markLong  || prices[sym]?.price || 0)
+    : (prices[sym]?.markShort || prices[sym]?.price || 0)
   const col       = parseFloat(collateral) || 0
-  const lim       = parseFloat(limitPrice) || markPrice
+  const lim       = parseFloat(limitPrice) || displayMark
   const size      = col * leverage
-  const entryP    = orderType === 'Limit' ? lim : markPrice
+  const entryP    = orderType === 'Limit' ? lim : tradingMark
   const liqPrice  = col > 0 ? estLiqPrice(entryP, leverage, side === 'long') : null
-  const fee       = size * 0.00045
+  const fee       = size * feeBps / 10000
 
   /* fill collateral from balance pct */
   function fillPct(p) {
@@ -139,7 +163,7 @@ export function TradingPanel({ sym, prices, account, isConnecting, onTrade, onCo
             <input
               className="input"
               type="number"
-              placeholder={fmtPriceRaw(markPrice).replace('$', '')}
+              placeholder={fmtPriceRaw(displayMark).replace('$', '')}
               value={limitPrice}
               onChange={(e) => setLimitPrice(e.target.value)}
             />
@@ -216,7 +240,7 @@ export function TradingPanel({ sym, prices, account, isConnecting, onTrade, onCo
             <span className="order-val neg">{liqPrice ? fmtPriceRaw(liqPrice) : '—'}</span>
           </div>
           <div className="order-row">
-            <span className="order-key">Fee (~0.045%)</span>
+            <span className="order-key">Fee ({(feeBps / 100).toFixed(3)}%)</span>
             <span className="order-val">{fmtUsdc(fee)}</span>
           </div>
           <div className="order-row">
