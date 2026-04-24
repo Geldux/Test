@@ -68,7 +68,21 @@ async function fetchOnChainData() {
             }
           }
         } catch (e) {
-          console.warn(`[usePrices] ${m.sym} mark fetch failed:`, e?.message ?? e)
+          console.warn(`[usePrices] ${m.sym} getMarkPrice failed (likely stale on-chain Pyth):`, e?.message ?? e)
+          /* getIndexPrice may use getPriceUnsafe internally — succeeds even when on-chain
+             Pyth is stale (no active price updater on testnet between trades).
+             We get a single price with no bid/ask spread, but it's better than leaving
+             markLong/markShort at 0, which forces the UI to fall back to Hermes mid. */
+          try {
+            const indexRaw = await cfg.getIndexPrice(m.key)
+            const index = indexRaw ? Number(indexRaw) / 1e18 : 0
+            if (index > 0) {
+              _prices[m.sym] = { ..._prices[m.sym], markLong: index, markShort: index }
+              console.log(`[usePrices] ${m.sym} mark fallback → getIndexPrice: ${index.toFixed(6)} (no spread)`)
+            }
+          } catch (ie) {
+            console.warn(`[usePrices] ${m.sym} getIndexPrice also failed:`, ie?.message ?? ie)
+          }
         }
         try {
           const fundRaw = await cfg.computeFundingRate(m.key)

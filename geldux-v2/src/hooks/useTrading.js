@@ -395,6 +395,36 @@ export function useTrading({ onSuccess, onError } = {}) {
             if (Math.abs(entry - (isLong ? mL : mS)) / (isLong ? mL : mS) > 0.001) {
               console.warn('[openPosition] ⚠ entry differs from expected mark by >0.1% — check contract mark formula vs VAA price')
             }
+            /* ── UI mark source audit ──
+               Mirrors getMarkForPos() logic from PositionsPanel to show exactly which
+               price source the UI is currently using for PnL display.  If markShort/
+               markLong are 0 in the cache (fetchOnChainData failed silently), the UI
+               falls back to Hermes mid — this block makes that visible immediately. */
+            const uiSnap     = getCurrentPrice(sym)
+            const uiMrkShort = uiSnap?.markShort || 0
+            const uiMrkLong  = uiSnap?.markLong  || 0
+            const uiHermes   = uiSnap?.price     || 0
+            const sizeUsd    = Number(storedPos.size) / 1e18
+            const uiMrkUsed  = isLong
+              ? (uiMrkShort || uiHermes || uiMrkLong || entry)
+              : (uiMrkLong  || uiHermes || uiMrkShort || entry)
+            const uiMrkSrc   = isLong
+              ? (uiMrkShort > 0 ? 'markShort (correct bid)' : uiHermes > 0 ? 'Hermes.price (FALLBACK!)' : uiMrkLong > 0 ? 'markLong (wrong side!)' : 'entryPrice')
+              : (uiMrkLong  > 0 ? 'markLong (correct ask)'  : uiHermes > 0 ? 'Hermes.price (FALLBACK!)' : uiMrkShort > 0 ? 'markShort (wrong side!)' : 'entryPrice')
+            const uiPnlEst   = entry > 0 && uiMrkUsed > 0
+              ? (isLong ? (uiMrkUsed - entry) / entry : (entry - uiMrkUsed) / entry) * sizeUsd
+              : null
+            console.log('[openPosition] ── UI MARK SOURCE AUDIT ──')
+            console.log('  prices[sym].markShort :', uiMrkShort || '(zero/missing)')
+            console.log('  prices[sym].markLong  :', uiMrkLong  || '(zero/missing)')
+            console.log('  prices[sym].price     :', uiHermes   || '(zero/missing)', '← Hermes mid')
+            console.log('  getMarkForPos source  :', uiMrkSrc)
+            console.log('  getMarkForPos value   :', uiMrkUsed)
+            console.log('  position sizeUsd      :', sizeUsd.toFixed(4))
+            console.log('  UI est PnL (vs entry) :', uiPnlEst != null ? uiPnlEst.toFixed(4) : 'n/a', 'USD')
+            if (uiMrkSrc.includes('FALLBACK')) {
+              console.warn('[openPosition] ⚠ UI using Hermes mid for PnL — markLong/markShort absent from cache (fetchOnChainData likely failed due to stale on-chain Pyth)')
+            }
           }).catch((e) => console.warn('[openPosition] post-open audit read failed:', e?.message))
         }
       }
@@ -466,6 +496,13 @@ export function useTrading({ onSuccess, onError } = {}) {
       const signer = getSigner()
       if (!signer) throw new Error('Wallet not connected')
 
+      /* Start wallet USDC snapshot non-blocking in parallel with VAA fetch.
+         By the time the tx confirms (~10-30 s) this eth_call will be complete. */
+      const rp = getReadProvider()
+      const usdcBeforePromise = rp
+        ? new Contract(ADDRESSES.USDC, ABI_USDC, rp).balanceOf(getAccount()).catch(() => null)
+        : null
+
       setStep('Fetching oracle price…')
       const { updateData, fee } = await getPythData(signer, { fresh: true })
       const closeSnap  = getCurrentPrice(sym)
@@ -489,6 +526,33 @@ export function useTrading({ onSuccess, onError } = {}) {
       setStep('Confirming on Base…')
       const receipt = await waitTx(tx)
       const { pnl, payout } = parseCloseReceipt(receipt, getAccount())
+
+      /* Non-blocking post-close wallet USDC delta — compares wallet change vs
+         on-chain payout Transfer to verify no funds were silently lost/gained. */
+      if (usdcBeforePromise) {
+        Promise.all([
+          usdcBeforePromise,
+          new Contract(ADDRESSES.USDC, ABI_USDC, rp).balanceOf(getAccount()).catch(() => null),
+        ]).then(([beforeRaw, afterRaw]) => {
+          if (beforeRaw == null || afterRaw == null) return
+          const before = Number(beforeRaw) / 1e18
+          const after  = Number(afterRaw)  / 1e18
+          const delta  = after - before
+          console.log('[closePosition] ── POST-CLOSE WALLET AUDIT ──')
+          console.log('  USDC before       :', before.toFixed(4))
+          console.log('  USDC after        :', after.toFixed(4))
+          console.log('  wallet delta      :', (delta >= 0 ? '+' : '') + delta.toFixed(4))
+          console.log('  payout (Transfer) :', payout != null ? payout.toFixed(4) : 'n/a')
+          if (payout != null) {
+            const diff = delta - payout
+            console.log('  delta vs payout   :', (diff >= 0 ? '+' : '') + diff.toFixed(4), Math.abs(diff) < 0.01 ? '✓ match' : '⚠ MISMATCH')
+          }
+          if (pnl != null) {
+            console.log('  on-chain PnL      :', (pnl >= 0 ? '+' : '') + pnl.toFixed(4), 'USD')
+          }
+        }).catch(() => {})
+      }
+
       return { hash: tx.hash, receipt, pnl, payout }
     })
   }, [run])
