@@ -90,12 +90,14 @@ async function fetchOnChainData() {
   }
 }
 
-/* Cached VAA binary data for 1-sig trades */
+/* Cached VAA binary data — used only when fresh=false (non-trade paths) */
 let _vaaCache = { data: [], ts: 0 }
 
-export async function fetchVaas(pythIds) {
+/* fresh=true: always fetch a new VAA from Hermes (required for actual trade submission).
+   fresh=false: reuse cached data if < 8 s old (cross StalePrice update retry only). */
+export async function fetchVaas(pythIds, { fresh = false } = {}) {
   const now = Date.now()
-  if (now - _vaaCache.ts < 8000 && _vaaCache.data.length) return _vaaCache.data
+  if (!fresh && now - _vaaCache.ts < 8000 && _vaaCache.data.length) return _vaaCache.data
   const ids = pythIds.map((id) => `ids[]=${id}`).join('&')
   const res  = await fetch(
     `${HERMES_URL}/v2/updates/price/latest?${ids}&encoding=hex`,
@@ -106,12 +108,9 @@ export async function fetchVaas(pythIds) {
   const vaas = (data?.binary?.data || []).map((d) => '0x' + d)
   if (!vaas.length) throw new Error('Hermes returned empty VAA list — cannot update oracle price')
   _vaaCache = { data: vaas, ts: now }
-  /* Sync the display price cache with the exact price embedded in this VAA.
-     Without this, _prices[sym].price (from fetchHermesPrices) and the VAA
-     price used for on-chain entry can be up to 16 seconds apart, creating a
-     visible "instant PnL" in the positions table that doesn't reflect reality
-     at the moment of submission.  After this call, the displayed mark and the
-     entry price the contract will store are from the same Hermes response. */
+  /* Sync the display price cache with the price embedded in this VAA so the
+     entry preview and the actual on-chain entry price come from the same feed
+     response.  getCurrentPrice() after fetchVaas returns this synced value. */
   const parsed = data?.parsed ?? []
   if (parsed.length > 0) {
     for (const entry of parsed) {
@@ -120,7 +119,6 @@ export async function fetchVaas(pythIds) {
       const { price, expo, publish_time } = entry.price
       const priceNum = Number(price) * Math.pow(10, Number(expo))
       if (priceNum > 0) {
-        console.log(`[fetchVaas] VAA price for ${sym}: ${priceNum} (publishTime ${publish_time}, age ${Math.floor(Date.now()/1000) - publish_time}s)`)
         _prices[sym] = { ..._prices[sym], price: priceNum, publishTime: publish_time }
       }
     }

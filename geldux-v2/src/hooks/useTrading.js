@@ -247,16 +247,19 @@ function isInfraError(err) {
 }
 
 /* ── Pyth VAA + fee ──────────────────────────────────────────────────── */
-async function getPythData(signer) {
+/* fresh=true (default): always fetches a new VAA from Hermes — required for
+   all isolated trade submissions so execution price matches display price.
+   fresh=false: may reuse 8-s cached data (cross StalePrice retry path). */
+async function getPythData(signer, { fresh = true } = {}) {
   const pythIds    = MARKETS.map((m) => m.pythId)
-  const updateData = await fetchVaas(pythIds)
+  const updateData = await fetchVaas(pythIds, { fresh })
   /* getUpdateFee is a view call that can fail on some Pyth deployments.
      Fall back to 1 wei — Pyth fee on Base Sepolia testnet is negligible. */
   let fee = 1n
   try {
     const pyth = new Contract(ADDRESSES.PYTH, ABI_PYTH, signer)
     fee = await pyth.getUpdateFee(updateData)
-    console.log('[getPythData] updateFee:', fee.toString(), '| VAAs:', updateData.length)
+    console.log('[getPythData] updateFee:', fee.toString(), '| VAAs:', updateData.length, '| fresh:', fresh)
   } catch (e) {
     console.warn('[getPythData] getUpdateFee failed, using 1 wei fallback:', e?.message)
   }
@@ -307,7 +310,31 @@ export function useTrading({ onSuccess, onError } = {}) {
       const { v, r, s, deadline, nonce, domain } = await signPermit(signer, ADDRESSES.PERP_VAULT, collateralRaw)
 
       setStep('Fetching oracle price…')
-      const { updateData, fee } = await getPythData(signer)
+      /* Always fetch a fresh VAA for isolated opens — never reuse cache.
+         The 8-s VAA cache would allow the displayed mark price (updated by
+         fetchHermesPrices every 8 s) to get ahead of the stale execution
+         price, making every long open appear instantly profitable. */
+      const { updateData, fee } = await getPythData(signer, { fresh: true })
+
+      /* Capture execution snapshot immediately after fresh VAA fetch.
+         getCurrentPrice() now reflects the exact price embedded in the VAA
+         that will be submitted to the contract. */
+      const execSnap  = getCurrentPrice(sym)
+      const execNowS  = Math.floor(Date.now() / 1000)
+      const execVaaAge = execSnap?.publishTime ? execNowS - execSnap.publishTime : null
+
+      console.log('[openPosition] ── EXECUTION VAA ──')
+      console.log('  sym / direction    :', sym, isLong ? 'LONG' : 'SHORT')
+      console.log('  VAA price          :', execSnap?.price)
+      console.log('  VAA publishTime    :', execSnap?.publishTime)
+      console.log('  VAA age            :', execVaaAge != null ? execVaaAge + 's' : 'n/a')
+      console.log('  markLong (ask)     :', execSnap?.markLong,  '← expected entry for longs')
+      console.log('  markShort (bid)    :', execSnap?.markShort, '← expected entry for shorts')
+      console.log('  expected entry     :', isLong ? execSnap?.markLong : execSnap?.markShort)
+      console.log('  collateral / lev   :', collateralUsd, '/', Number(leverage), '× → notional', collateralUsd * Number(leverage))
+      if (execVaaAge != null && execVaaAge > 10) {
+        console.warn('[openPosition] ⚠ VAA is', execVaaAge, 's old — entry may diverge from current mark; consider refetch')
+      }
 
       console.log('[openPosition] ── PRE-SUBMIT ──')
       console.log('  owner     :', owner, '| spender:', ADDRESSES.PERP_VAULT, '(PERP_VAULT)')
@@ -333,20 +360,13 @@ export function useTrading({ onSuccess, onError } = {}) {
         }
       }
 
-      /* Log VAA price just before submit — this is the price the contract will see. */
-      const priceAtSubmit = getCurrentPrice(sym)
-      console.log('[openPosition] ── PRICE AUDIT (pre-submit) ──')
-      console.log('  sym / direction   :', sym, isLong ? 'LONG' : 'SHORT')
-      console.log('  Hermes/VAA price  :', priceAtSubmit?.price, '(age:', priceAtSubmit?.publishTime ? Math.floor(Date.now()/1000) - priceAtSubmit.publishTime + 's)' : 'n/a)')
-      console.log('  collateral / lev  :', collateralUsd, '/', Number(leverage), '× → notional', collateralUsd * Number(leverage))
-
       setStep(`Submitting ${isLong ? 'Long' : 'Short'}…`)
       const tx      = await core.openWithPermitAndPriceUpdate(...callArgs, { value: fee })
       setStep('Confirming on Base…')
       const receipt = await waitTx(tx)
       const openedPosId = parseOpenPosId(receipt)
 
-      /* Non-blocking post-open audit: compare stored entry vs mark prices. */
+      /* Non-blocking post-open audit: compare stored entry vs execution VAA and marks. */
       if (openedPosId != null) {
         const rp2 = getReadProvider()
         if (rp2) {
@@ -361,18 +381,20 @@ export function useTrading({ onSuccess, onError } = {}) {
             const entry  = Number(storedPos.entryPrice) / 1e18
             const mL     = Number(markLongRaw)  / 1e18
             const mS     = Number(markShortRaw) / 1e18
-            const hNow   = getCurrentPrice(sym)
             console.log('[openPosition] ── POST-OPEN PRICE AUDIT ──')
-            console.log('  posId                   :', openedPosId)
-            console.log('  stored entryPrice        :', entry)
-            console.log('  Hermes price now         :', hNow?.price)
-            console.log('  getMarkPrice(key, true)  :', mL, '← long mark')
-            console.log('  getMarkPrice(key, false) :', mS, '← short mark')
-            console.log('  markLong - markShort     :', (mL - mS).toFixed(6), '=', ((mL - mS) / (mS || 1) * 100).toFixed(4) + '% spread')
-            console.log('  entry vs Hermes          :', hNow?.price ? (entry - hNow.price).toFixed(6) : 'n/a', 'diff')
-            console.log('  entry vs markLong        :', (entry - mL).toFixed(6), 'diff')
-            console.log('  entry vs markShort       :', (entry - mS).toFixed(6), 'diff')
-            console.log('  feeBps                   :', Number(feeBpsRaw), '=', (Number(feeBpsRaw) / 100).toFixed(3) + '%')
+            console.log('  posId                     :', openedPosId)
+            console.log('  stored entryPrice          :', entry)
+            console.log('  execution VAA price        :', execSnap?.price, '(submitted)')
+            console.log('  getMarkPrice(key, true)    :', mL, '← long mark (post-open read)')
+            console.log('  getMarkPrice(key, false)   :', mS, '← short mark (post-open read)')
+            console.log('  spread markLong-markShort  :', (mL - mS).toFixed(6), '=', ((mL - mS) / (mS || 1) * 100).toFixed(4) + '%')
+            console.log('  entry vs execution VAA     :', execSnap?.price ? (entry - execSnap.price).toFixed(6) : 'n/a', 'diff')
+            console.log('  entry vs markLong          :', (entry - mL).toFixed(6), 'diff')
+            console.log('  entry vs markShort         :', (entry - mS).toFixed(6), 'diff')
+            console.log('  feeBps                     :', Number(feeBpsRaw), '=', (Number(feeBpsRaw) / 100).toFixed(3) + '%')
+            if (Math.abs(entry - (isLong ? mL : mS)) / (isLong ? mL : mS) > 0.001) {
+              console.warn('[openPosition] ⚠ entry differs from expected mark by >0.1% — check contract mark formula vs VAA price')
+            }
           }).catch((e) => console.warn('[openPosition] post-open audit read failed:', e?.message))
         }
       }
@@ -394,7 +416,7 @@ export function useTrading({ onSuccess, onError } = {}) {
       const { v, r, s, deadline, nonce, domain } = await signPermit(signer, ADDRESSES.PERP_VAULT, collateralRaw)
 
       setStep('Fetching oracle price…')
-      const { updateData, fee } = await getPythData(signer)
+      const { updateData, fee } = await getPythData(signer, { fresh: true })
 
       const core = new Contract(ADDRESSES.PERP_CORE, ABI_PERP_CORE, signer)
       /* Shared args — simulation and submit always use the identical payload */
@@ -445,13 +467,21 @@ export function useTrading({ onSuccess, onError } = {}) {
       if (!signer) throw new Error('Wallet not connected')
 
       setStep('Fetching oracle price…')
-      const { updateData, fee } = await getPythData(signer)
-      const priceAtClose = getCurrentPrice(sym)
-      console.log('[closePosition] ── PRICE AUDIT (pre-close) ──')
+      const { updateData, fee } = await getPythData(signer, { fresh: true })
+      const closeSnap  = getCurrentPrice(sym)
+      const closeNowS  = Math.floor(Date.now() / 1000)
+      const closeVaaAge = closeSnap?.publishTime ? closeNowS - closeSnap.publishTime : null
+      console.log('[closePosition] ── EXECUTION VAA ──')
       console.log('  posId            :', posId)
       console.log('  sym              :', sym)
-      console.log('  Hermes/VAA price :', priceAtClose?.price, '(this will be the close price)')
-      console.log('  publishTime age  :', priceAtClose?.publishTime ? Math.floor(Date.now()/1000) - priceAtClose.publishTime + 's' : 'n/a')
+      console.log('  VAA price        :', closeSnap?.price)
+      console.log('  VAA publishTime  :', closeSnap?.publishTime)
+      console.log('  VAA age          :', closeVaaAge != null ? closeVaaAge + 's' : 'n/a')
+      console.log('  markLong (ask)   :', closeSnap?.markLong)
+      console.log('  markShort (bid)  :', closeSnap?.markShort)
+      if (closeVaaAge != null && closeVaaAge > 10) {
+        console.warn('[closePosition] ⚠ VAA is', closeVaaAge, 's old')
+      }
 
       setStep('Submitting close…')
       const core = new Contract(ADDRESSES.PERP_CORE, ABI_PERP_CORE, signer)
@@ -619,7 +649,7 @@ export function useTrading({ onSuccess, onError } = {}) {
       if (!signer) throw new Error('Wallet not connected')
 
       setStep('Fetching oracle price…')
-      const { updateData, fee } = await getPythData(signer)
+      const { updateData, fee } = await getPythData(signer, { fresh: true })
 
       setStep('Submitting partial close…')
       const core = new Contract(ADDRESSES.PERP_CORE, ABI_PERP_CORE, signer)
