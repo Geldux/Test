@@ -51,10 +51,10 @@ async function fetchOnChainData() {
       MARKETS.map(async (m) => {
         try {
           /* Fetch both directional mark prices in parallel.
-             forLong=true  → price applied to long  positions (entry/PnL for longs)
-             forLong=false → price applied to short positions (entry/PnL for shorts)
-             If these differ the protocol has a bid/ask spread; we expose both so
-             PositionsPanel can use the direction-matching price for accurate PnL. */
+             forLong=true  → BID — the price long  positions are marked/valued at (close-side for longs)
+             forLong=false → ASK — the price short positions are marked/valued at (close-side for shorts)
+             markLong  = BID (lower);  markShort = ASK (higher).
+             Longs open at ASK (markShort); longs close/display at BID (markLong). */
           const [markLongRaw, markShortRaw] = await Promise.all([
             cfg.getMarkPrice(m.key, true),
             cfg.getMarkPrice(m.key, false),
@@ -63,8 +63,9 @@ async function fetchOnChainData() {
           const markShort = markShortRaw ? Number(markShortRaw) / 1e18 : 0
           if (markLong > 0 || markShort > 0) {
             _prices[m.sym] = { ..._prices[m.sym], markLong, markShort }
-            if (markLong > 0 && markShort > 0 && Math.abs(markLong - markShort) / markShort > 0.0001) {
-              console.log(`[usePrices] ${m.sym} mark spread: long=${markLong.toFixed(6)} short=${markShort.toFixed(6)} diff=${((markLong - markShort) / markShort * 100).toFixed(4)}%`)
+            if (markLong > 0 && markShort > 0 && Math.abs(markShort - markLong) / markLong > 0.0001) {
+              /* markLong=BID (lower), markShort=ASK (higher): spread = ASK - BID */
+              console.log(`[usePrices] ${m.sym} bid/ask spread: bid(markLong)=${markLong.toFixed(6)} ask(markShort)=${markShort.toFixed(6)} spread=${((markShort - markLong) / markLong * 100).toFixed(4)}%`)
             }
           }
         } catch (e) {

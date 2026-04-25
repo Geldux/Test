@@ -336,12 +336,13 @@ export function useTrading({ onSuccess, onError } = {}) {
 
       console.log('[openPosition] ── EXECUTION VAA ──')
       console.log('  sym / direction    :', sym, isLong ? 'LONG' : 'SHORT')
-      console.log('  VAA price          :', execSnap?.price)
+      console.log('  VAA price (index)  :', execSnap?.price)
       console.log('  VAA publishTime    :', execSnap?.publishTime)
       console.log('  VAA age            :', execVaaAge != null ? execVaaAge + 's' : 'n/a')
-      console.log('  markLong (ask)     :', execSnap?.markLong,  '← expected entry for longs')
-      console.log('  markShort (bid)    :', execSnap?.markShort, '← expected entry for shorts')
-      console.log('  expected entry     :', isLong ? execSnap?.markLong : execSnap?.markShort)
+      console.log('  markLong  (BID)    :', execSnap?.markLong,  '← close-side for longs / open-side for shorts')
+      console.log('  markShort (ASK)    :', execSnap?.markShort, '← close-side for shorts / open-side for longs')
+      console.log('  expected open entry:', isLong ? execSnap?.markShort : execSnap?.markLong,
+                  isLong ? '(ASK — unfavorable for long open)' : '(BID — unfavorable for short open)')
       console.log('  collateral / lev   :', _col, '/', _lev, '× → notional', _col * _lev)
       if (execVaaAge != null && execVaaAge > 10) {
         console.warn('[openPosition] ⚠ VAA is', execVaaAge, 's old — entry may diverge from current mark; consider refetch')
@@ -383,75 +384,55 @@ export function useTrading({ onSuccess, onError } = {}) {
         if (rp2) {
           const store2 = new Contract(ADDRESSES.PERP_STORE, ABI_PERP_STORE, rp2)
           const cfg2   = new Contract(ADDRESSES.PERP_CONFIG, ABI_PERP_CONFIG, rp2)
-          /* DEV-only: compare VAA execution price vs live display estimate vs stored entry. */
-          if (import.meta.env.DEV) {
-            store2.getPosition(openedPosId).then((sp) => {
-              const entry    = Number(sp.entryPrice) / 1e18
-              const diagSnap = getCurrentPrice(sym)
-              const mS       = diagSnap?.markShort || 0
-              const mL       = diagSnap?.markLong  || 0
-              const hermes   = diagSnap?.price     || 0
-              const liveEst  = isLong ? (mS > 0 ? mS : hermes) : (mL > 0 ? mL : hermes)
-              const diff     = liveEst > 0
-                ? ((entry - liveEst) / liveEst * 100).toFixed(4) + '%'
-                : 'n/a'
-              console.log('[DEV] ── OPEN PRICE DIAGNOSTIC ──')
-              console.log('  market      :', sym, isLong ? 'LONG' : 'SHORT')
-              console.log('  VAA price   :', execSnap?.price, '← submitted to contract')
-              console.log('  live est    :', liveEst || 'n/a', '← current UI mark estimate')
-              console.log('  stored entry:', entry, '← contract-recorded entryPrice')
-              console.log('  entry vs live:', diff)
-            }).catch(() => {})
-          }
           Promise.all([
             store2.getPosition(openedPosId),
             cfg2.getMarkPrice(market.key, true),
             cfg2.getMarkPrice(market.key, false),
+            cfg2.getIndexPrice(market.key),
             cfg2.feeBps(),
-          ]).then(([storedPos, markLongRaw, markShortRaw, feeBpsRaw]) => {
-            const entry  = Number(storedPos.entryPrice) / 1e18
-            const mL     = Number(markLongRaw)  / 1e18
-            const mS     = Number(markShortRaw) / 1e18
-            console.log('[openPosition] ── POST-OPEN PRICE AUDIT ──')
-            console.log('  posId                     :', openedPosId)
-            console.log('  stored entryPrice          :', entry)
-            console.log('  execution VAA price        :', execSnap?.price, '(submitted)')
-            console.log('  getMarkPrice(key, true)    :', mL, '← long mark (post-open read)')
-            console.log('  getMarkPrice(key, false)   :', mS, '← short mark (post-open read)')
-            console.log('  spread markLong-markShort  :', (mL - mS).toFixed(6), '=', ((mL - mS) / (mS || 1) * 100).toFixed(4) + '%')
-            console.log('  entry vs execution VAA     :', execSnap?.price ? (entry - execSnap.price).toFixed(6) : 'n/a', 'diff')
-            console.log('  entry vs markLong          :', (entry - mL).toFixed(6), 'diff')
-            console.log('  entry vs markShort         :', (entry - mS).toFixed(6), 'diff')
-            console.log('  feeBps                     :', Number(feeBpsRaw), '=', (Number(feeBpsRaw) / 100).toFixed(3) + '%')
-            if (Math.abs(entry - (isLong ? mL : mS)) / (isLong ? mL : mS) > 0.001) {
-              console.warn('[openPosition] ⚠ entry differs from expected mark by >0.1% — check contract mark formula vs VAA price')
+          ]).then(([storedPos, markTrueRaw, markFalseRaw, indexRaw, feeBpsRaw]) => {
+            const entry   = Number(storedPos.entryPrice) / 1e18
+            const mTrue   = Number(markTrueRaw)  / 1e18   /* BID — close-side for longs */
+            const mFalse  = Number(markFalseRaw) / 1e18   /* ASK — close-side for shorts */
+            const index   = Number(indexRaw)     / 1e18
+            const feeBps  = Number(feeBpsRaw)
+            const spread  = mFalse - mTrue                /* ASK - BID, should be > 0 */
+            /* For a long open: correct (unfavorable) entry = ASK = mFalse
+               For a short open: correct (unfavorable) entry = BID = mTrue */
+            const expectedOpenEntry = isLong ? mFalse : mTrue
+            const entryVsExpected   = expectedOpenEntry > 0
+              ? ((entry - expectedOpenEntry) / expectedOpenEntry * 100).toFixed(4) + '%'
+              : 'n/a'
+            /* entry < expectedOpenEntry for longs = entry below ASK = FAVORABLE for long = BUG
+               entry > expectedOpenEntry for shorts = entry above BID = FAVORABLE for short = BUG */
+            const entryFavorable = isLong
+              ? (entry < expectedOpenEntry - 0.0001)   /* long entry below ask */
+              : (entry > expectedOpenEntry + 0.0001)   /* short entry above bid */
+
+            if (import.meta.env.DEV) {
+              console.group('[DEV] ── OPEN PRICE AUDIT ──')
+              console.log('  side                       :', isLong ? 'LONG' : 'SHORT')
+              console.log('  asset                      :', sym)
+              console.log('  VAA/index price (Hermes)   :', execSnap?.price)
+              console.log('  getIndexPrice              :', index)
+              console.log('  getMarkPrice(key, true)    :', mTrue,  '← BID / close-side for longs')
+              console.log('  getMarkPrice(key, false)   :', mFalse, '← ASK / close-side for shorts')
+              console.log('  bid/ask spread             :', spread.toFixed(6), '(' + (spread / (mTrue || 1) * 100).toFixed(4) + '%)')
+              console.log('  stored entryPrice          :', entry)
+              console.log('  expected open entry        :', expectedOpenEntry, isLong ? '(ASK — unfavorable for long)' : '(BID — unfavorable for short)')
+              console.log('  entry vs expected          :', entryVsExpected)
+              console.log('  entry matches markTrue     :', Math.abs(entry - mTrue)  < 0.01 * mTrue)
+              console.log('  entry matches markFalse    :', Math.abs(entry - mFalse) < 0.01 * mFalse)
+              console.log('  entry matches index        :', Math.abs(entry - index)  < 0.01 * index)
+              console.log('  feeBps                     :', feeBps, '=', (feeBps / 100).toFixed(3) + '%')
+              if (entryFavorable) {
+                console.warn('  ⚠ ENTRY IS FAVORABLE FOR TRADER — contract is using wrong side for open.')
+                console.warn('    ' + (isLong ? 'Long opened below ASK. Contract should call getMarkPrice(key, false) for long open.' : 'Short opened above BID. Contract should call getMarkPrice(key, true) for short open.'))
+              } else {
+                console.log('  entry direction            : UNFAVORABLE (correct — trader pays spread on open)')
+              }
+              console.groupEnd()
             }
-            /* ── UI mark source audit ──
-               Shows which source getLiveMarkForPosition uses for PnL display.
-               Contract mark (markShort/markLong) is preferred; Hermes mid is
-               the expected live estimate fallback when on-chain Pyth is stale. */
-            const uiSnap     = getCurrentPrice(sym)
-            const uiMrkShort = uiSnap?.markShort || 0
-            const uiMrkLong  = uiSnap?.markLong  || 0
-            const uiHermes   = uiSnap?.price     || 0
-            const sizeUsd    = Number(storedPos.size) / 1e18
-            const uiMrkUsed  = isLong
-              ? (uiMrkShort > 0 ? uiMrkShort : uiHermes || uiMrkLong || entry)
-              : (uiMrkLong  > 0 ? uiMrkLong  : uiHermes || uiMrkShort || entry)
-            const uiMrkSrc   = isLong
-              ? (uiMrkShort > 0 ? 'markShort (contract bid)' : uiHermes > 0 ? 'Hermes.price (live estimate)' : uiMrkLong > 0 ? 'markLong' : 'entryPrice')
-              : (uiMrkLong  > 0 ? 'markLong (contract ask)'  : uiHermes > 0 ? 'Hermes.price (live estimate)' : uiMrkShort > 0 ? 'markShort' : 'entryPrice')
-            const uiPnlEst   = entry > 0 && uiMrkUsed > 0
-              ? (isLong ? (uiMrkUsed - entry) / entry : (entry - uiMrkUsed) / entry) * sizeUsd
-              : null
-            console.log('[openPosition] ── UI MARK SOURCE AUDIT ──')
-            console.log('  prices[sym].markShort :', uiMrkShort || '(zero/missing)')
-            console.log('  prices[sym].markLong  :', uiMrkLong  || '(zero/missing)')
-            console.log('  prices[sym].price     :', uiHermes   || '(zero/missing)', '← Hermes live estimate')
-            console.log('  getLiveMarkForPos src :', uiMrkSrc)
-            console.log('  getLiveMarkForPos val :', uiMrkUsed)
-            console.log('  position sizeUsd      :', sizeUsd.toFixed(4))
-            console.log('  UI est PnL (vs entry) :', uiPnlEst != null ? uiPnlEst.toFixed(4) : 'n/a', 'USD')
           }).catch((e) => console.warn('[openPosition] post-open audit read failed:', e?.message))
         }
       }
@@ -543,8 +524,8 @@ export function useTrading({ onSuccess, onError } = {}) {
       console.log('  VAA price        :', closeSnap?.price)
       console.log('  VAA publishTime  :', closeSnap?.publishTime)
       console.log('  VAA age          :', closeVaaAge != null ? closeVaaAge + 's' : 'n/a')
-      console.log('  markLong (ask)   :', closeSnap?.markLong)
-      console.log('  markShort (bid)  :', closeSnap?.markShort)
+      console.log('  markLong  (BID)  :', closeSnap?.markLong,  '← close-side for longs')
+      console.log('  markShort (ASK)  :', closeSnap?.markShort, '← close-side for shorts')
       if (closeVaaAge != null && closeVaaAge > 10) {
         console.warn('[closePosition] ⚠ VAA is', closeVaaAge, 's old')
       }
@@ -567,17 +548,34 @@ export function useTrading({ onSuccess, onError } = {}) {
           const before = Number(beforeRaw) / 1e18
           const after  = Number(afterRaw)  / 1e18
           const delta  = after - before
-          console.log('[closePosition] ── POST-CLOSE WALLET AUDIT ──')
-          console.log('  USDC before       :', before.toFixed(4))
-          console.log('  USDC after        :', after.toFixed(4))
-          console.log('  wallet delta      :', (delta >= 0 ? '+' : '') + delta.toFixed(4))
-          console.log('  payout (Transfer) :', payout != null ? payout.toFixed(4) : 'n/a')
-          if (payout != null) {
-            const diff = delta - payout
-            console.log('  delta vs payout   :', (diff >= 0 ? '+' : '') + diff.toFixed(4), Math.abs(diff) < 0.01 ? '✓ match' : '⚠ MISMATCH')
-          }
-          if (pnl != null) {
-            console.log('  on-chain PnL      :', (pnl >= 0 ? '+' : '') + pnl.toFixed(4), 'USD')
+          /* Close mark estimate: BID for long (markLong), ASK for short (markShort).
+             Not known here whether position is long — use Hermes mid as neutral reference. */
+          const closeMarkEst = closeSnap?.price || null
+          if (import.meta.env.DEV) {
+            console.group('[DEV] ── CLOSE PRICE AUDIT ──')
+            console.log('  posId                 :', posId)
+            console.log('  close mark estimate   :', closeMarkEst, '(Hermes mid at submit time)')
+            console.log('  on-chain PnL          :', pnl != null ? (pnl >= 0 ? '+' : '') + pnl.toFixed(4) : 'n/a', '(from Closed event)')
+            console.log('  USDC payout           :', payout != null ? payout.toFixed(4) : 'n/a', '(from Transfer event)')
+            console.log('  USDC before           :', before.toFixed(4))
+            console.log('  USDC after            :', after.toFixed(4))
+            console.log('  wallet delta          :', (delta >= 0 ? '+' : '') + delta.toFixed(4))
+            if (payout != null) {
+              const diff = delta - payout
+              console.log('  delta vs payout       :', (diff >= 0 ? '+' : '') + diff.toFixed(4), Math.abs(diff) < 0.01 ? '✓ match' : '⚠ MISMATCH')
+            }
+            if (pnl != null) {
+              /* pnl from Closed event is net after fees — positive = profitable close */
+              const quickProfit = pnl > 0
+              console.log('  profitable close      :', quickProfit ? '⚠ YES — on-chain PnL positive on close' : 'no (expected)')
+              if (quickProfit) {
+                console.warn('  ⚠ Close produced on-chain profit. If position was opened and closed immediately,')
+                console.warn('    this indicates the contract entry price was favorable (contract-side bug).')
+              }
+            }
+            console.groupEnd()
+          } else {
+            if (pnl != null) console.log('[closePosition] on-chain PnL:', (pnl >= 0 ? '+' : '') + pnl.toFixed(4), '| payout:', payout?.toFixed(4) ?? 'n/a', '| wallet delta:', (delta >= 0 ? '+' : '') + delta.toFixed(4))
           }
         }).catch(() => {})
       }
