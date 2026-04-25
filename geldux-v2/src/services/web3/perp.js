@@ -34,7 +34,7 @@ export async function openPosition({ sym, isLong, leverage, collateralUsd }) {
   const collateralRaw = parseUnits(String(Number(collateralUsd).toFixed(18)), 18)
 
   const [permit, { updateData, fee }] = await Promise.all([
-    signPermit(signer, ADDRESSES.PERP_CORE, collateralRaw),
+    signPermit(signer, ADDRESSES.PERP_VAULT, collateralRaw),
     getPythUpdateArgs(signer),
   ])
 
@@ -72,7 +72,7 @@ export async function increasePosition({ posId, collateralUsd }) {
   const extra = parseUnits(String(Number(collateralUsd).toFixed(18)), 18)
 
   const [permit, { updateData, fee }] = await Promise.all([
-    signPermit(signer, ADDRESSES.PERP_CORE, extra),
+    signPermit(signer, ADDRESSES.PERP_VAULT, extra),
     getPythUpdateArgs(signer),
   ])
 

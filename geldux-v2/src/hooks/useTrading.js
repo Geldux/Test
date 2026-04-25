@@ -32,10 +32,12 @@ async function signPermit(signer, spender, amount) {
     usdcRead.DOMAIN_SEPARATOR().catch(() => null),
   ])
 
-  if (onChainVersion !== null) {
-    console.log('[signPermit] version() on-chain:', JSON.stringify(onChainVersion))
-  } else {
-    console.warn('[signPermit] version() call failed — will try hardcoded candidates 1, 2, and no-version')
+  if (import.meta.env.DEV) {
+    if (onChainVersion !== null) {
+      console.log('[signPermit] version() on-chain:', JSON.stringify(onChainVersion))
+    } else {
+      console.warn('[signPermit] version() call failed — will try hardcoded candidates 1, 2, and no-version')
+    }
   }
 
   /* Fetch nonce via read provider; fall back to signer provider, then 0n */
@@ -68,22 +70,23 @@ async function signPermit(signer, spender, amount) {
   ]
   let domain = candidates[0]
   if (onChainSep) {
-    console.log('[signPermit] on-chain DOMAIN_SEPARATOR:', onChainSep)
     for (const c of candidates) {
       try {
         const computed = TypedDataEncoder.hashDomain(c)
-        console.log('[signPermit] candidate', JSON.stringify({ ...c, chainId: Number(c.chainId) }), '→', computed)
+        if (import.meta.env.DEV) {
+          console.log('[signPermit] candidate', JSON.stringify({ ...c, chainId: Number(c.chainId) }), '→', computed)
+        }
         if (computed.toLowerCase() === onChainSep.toLowerCase()) {
           domain = c
-          console.log('[signPermit] DOMAIN MATCHED ✓', JSON.stringify({ ...domain, chainId: Number(domain.chainId) }))
+          if (import.meta.env.DEV) {
+            console.log('[signPermit] DOMAIN MATCHED ✓', JSON.stringify({ ...domain, chainId: Number(domain.chainId) }))
+          }
           break
         }
       } catch (_) {}
     }
     if (domain === candidates[0] && onChainVersion === null) {
       console.warn('[signPermit] ⚠ no candidate matched on-chain separator — using version=1 as default')
-    } else if (domain === candidates[0] && onChainVersion !== null) {
-      console.log('[signPermit] using on-chain version as domain (matched or first candidate)')
     }
   }
 
@@ -99,17 +102,21 @@ async function signPermit(signer, spender, amount) {
   }
   const message = { owner, spender, value: amount, nonce, deadline }
 
-  console.log('[signPermit] ── SIGNING ──')
-  console.log('  domain :', JSON.stringify({ ...domain, chainId: Number(domain.chainId) }))
-  console.log('  owner  :', owner)
-  console.log('  spender:', spender)
-  console.log('  amount :', amount.toString(), '(', Number(amount) / 1e18, 'USDC )')
-  console.log('  nonce  :', nonce.toString())
-  console.log('  deadline:', deadline)
+  if (import.meta.env.DEV) {
+    console.log('[signPermit] ── SIGNING ──')
+    console.log('  domain :', JSON.stringify({ ...domain, chainId: Number(domain.chainId) }))
+    console.log('  owner  :', owner)
+    console.log('  spender:', spender)
+    console.log('  amount :', amount.toString(), '(', Number(amount) / 1e18, 'USDC )')
+    console.log('  nonce  :', nonce.toString())
+    console.log('  deadline:', deadline)
+  }
 
   const sig   = await signer.signTypedData(domain, types, message)
   const { v, r, s } = Signature.from(sig)
-  console.log('[signPermit] v:', v, '| r:', r.slice(0, 18) + '… | s:', s.slice(0, 18) + '…')
+  if (import.meta.env.DEV) {
+    console.log('[signPermit] v:', v, '| r:', r.slice(0, 18) + '… | s:', s.slice(0, 18) + '…')
+  }
   return { v, r, s, deadline, nonce, domain }
 }
 
@@ -299,8 +306,12 @@ export function useTrading({ onSuccess, onError } = {}) {
       if (!signer) throw new Error('Wallet not connected')
       const market        = MARKETS.find((m) => m.sym === sym)
       if (!market) throw new Error('Unknown market')
+      const _col = Number(collateralUsd)
+      if (!isFinite(_col) || _col <= 0) throw new Error('Invalid collateral amount')
+      const _lev = Number(leverage)
+      if (!isFinite(_lev) || _lev < 1) throw new Error('Invalid leverage')
       const owner         = await signer.getAddress()
-      const collateralRaw = parseUnits(String(Number(collateralUsd).toFixed(18)), 18)
+      const collateralRaw = parseUnits(_col.toFixed(18), 18)
 
       setStep('Signing permit…')
       /* Spender = PerpVault: openWithPermitAndPriceUpdate routes USDC into PerpVault
@@ -331,7 +342,7 @@ export function useTrading({ onSuccess, onError } = {}) {
       console.log('  markLong (ask)     :', execSnap?.markLong,  '← expected entry for longs')
       console.log('  markShort (bid)    :', execSnap?.markShort, '← expected entry for shorts')
       console.log('  expected entry     :', isLong ? execSnap?.markLong : execSnap?.markShort)
-      console.log('  collateral / lev   :', collateralUsd, '/', Number(leverage), '× → notional', collateralUsd * Number(leverage))
+      console.log('  collateral / lev   :', _col, '/', _lev, '× → notional', _col * _lev)
       if (execVaaAge != null && execVaaAge > 10) {
         console.warn('[openPosition] ⚠ VAA is', execVaaAge, 's old — entry may diverge from current mark; consider refetch')
       }
@@ -341,11 +352,11 @@ export function useTrading({ onSuccess, onError } = {}) {
       console.log('  nonce     :', nonce.toString(), '| deadline:', deadline)
       console.log('  value     :', collateralRaw.toString(), '(', collateralUsd, 'USDC)')
       console.log('  domain    :', JSON.stringify({ ...domain, chainId: Number(domain.chainId) }))
-      console.log('  key/long/lev:', market.key, isLong, Number(leverage))
+      console.log('  key/long/lev:', market.key, isLong, _lev)
       console.log('  v / r / s :', v, r.slice(0, 18) + '…', s.slice(0, 18) + '…')
 
       const core     = new Contract(ADDRESSES.PERP_CORE, ABI_PERP_CORE, signer)
-      const callArgs = [market.key, isLong, Number(leverage), collateralRaw, false, deadline, v, r, s, updateData]
+      const callArgs = [market.key, isLong, _lev, collateralRaw, false, deadline, v, r, s, updateData]
 
       /* Blocking simulation — surfaces actual revert reason before broadcasting. */
       setStep('Simulating…')
@@ -438,8 +449,10 @@ export function useTrading({ onSuccess, onError } = {}) {
     return run('Increasing position…', async () => {
       const signer = getSigner()
       if (!signer) throw new Error('Wallet not connected')
+      const _col = Number(collateralUsd)
+      if (!isFinite(_col) || _col <= 0) throw new Error('Invalid collateral amount')
       const owner         = await signer.getAddress()
-      const collateralRaw = parseUnits(String(Number(collateralUsd).toFixed(18)), 18)
+      const collateralRaw = parseUnits(_col.toFixed(18), 18)
 
       setStep('Signing permit…')
       /* Spender = PerpVault: same as openPosition — extra collateral routes into PerpVault */
@@ -652,10 +665,12 @@ export function useTrading({ onSuccess, onError } = {}) {
     return run('Depositing to cross margin…', async () => {
       const signer = getSigner()
       if (!signer) throw new Error('Wallet not connected')
+      const _amt = Number(amountUsd)
+      if (!isFinite(_amt) || _amt <= 0) throw new Error('Invalid deposit amount')
       /* Resolve owner address explicitly — used for permit signing,
          staticCall from override, and diagnostics */
       const owner  = await signer.getAddress()
-      const amtRaw = parseUnits(String(Number(amountUsd).toFixed(18)), 18)
+      const amtRaw = parseUnits(_amt.toFixed(18), 18)
       setStep('Signing permit…')
       const { v, r, s, deadline } = await signPermit(signer, ADDRESSES.CROSS_MARGIN, amtRaw)
       const cross = new Contract(ADDRESSES.CROSS_MARGIN, ABI_CROSS_MARGIN, signer)
@@ -698,7 +713,9 @@ export function useTrading({ onSuccess, onError } = {}) {
     return run('Withdrawing from cross margin…', async () => {
       const signer  = getSigner()
       if (!signer) throw new Error('Wallet not connected')
-      const amtRaw  = parseUnits(String(Number(amountUsd).toFixed(18)), 18)
+      const _amt = Number(amountUsd)
+      if (!isFinite(_amt) || _amt <= 0) throw new Error('Invalid withdrawal amount')
+      const amtRaw  = parseUnits(_amt.toFixed(18), 18)
       const cross   = new Contract(ADDRESSES.CROSS_MARGIN, ABI_CROSS_MARGIN, signer)
       const tx      = await cross.withdraw(amtRaw, { gasLimit: 300_000 })
       const receipt = await waitTx(tx)
@@ -711,13 +728,15 @@ export function useTrading({ onSuccess, onError } = {}) {
     return run('Partially closing position…', async () => {
       const signer = getSigner()
       if (!signer) throw new Error('Wallet not connected')
+      const _delta = Number(collateralDelta)
+      if (!isFinite(_delta) || _delta <= 0) throw new Error('Invalid collateral delta')
 
       setStep('Fetching oracle price…')
       const { updateData, fee } = await getPythData(signer, { fresh: true })
 
       setStep('Submitting partial close…')
       const core = new Contract(ADDRESSES.PERP_CORE, ABI_PERP_CORE, signer)
-      const deltaRaw = parseUnits(String(Number(collateralDelta).toFixed(18)), 18)
+      const deltaRaw = parseUnits(_delta.toFixed(18), 18)
       const tx   = await core.partialCloseWithPriceUpdate(posId, deltaRaw, updateData, { value: fee })
       setStep('Confirming on Base…')
       const receipt = await waitTx(tx)
@@ -733,7 +752,9 @@ export function useTrading({ onSuccess, onError } = {}) {
     return run('Increasing cross position…', async () => {
       const signer   = getSigner()
       if (!signer) throw new Error('Wallet not connected')
-      const extraRaw = parseUnits(String(Number(collateralUsd).toFixed(18)), 18)
+      const _col = Number(collateralUsd)
+      if (!isFinite(_col) || _col <= 0) throw new Error('Invalid collateral amount')
+      const extraRaw = parseUnits(_col.toFixed(18), 18)
       const owner    = await signer.getAddress()
       const cross    = new Contract(ADDRESSES.CROSS_MARGIN, ABI_CROSS_MARGIN, signer)
 
@@ -797,15 +818,19 @@ export function useTrading({ onSuccess, onError } = {}) {
       if (!signer) throw new Error('Wallet not connected')
       const market = MARKETS.find((m) => m.sym === sym)
       if (!market) throw new Error('Unknown market')
+      const _col = Number(collateralUsd)
+      if (!isFinite(_col) || _col <= 0) throw new Error('Invalid collateral amount')
+      const _lev = Number(leverage)
+      if (!isFinite(_lev) || _lev < 1) throw new Error('Invalid leverage')
       const owner  = await signer.getAddress()
-      const cRaw   = parseUnits(String(Number(collateralUsd).toFixed(18)), 18)
+      const cRaw   = parseUnits(_col.toFixed(18), 18)
       const cross  = new Contract(ADDRESSES.CROSS_MARGIN, ABI_CROSS_MARGIN, signer)
 
       console.log('[crossOpenPosition] ── PRE-SUBMIT ──')
       console.log('  owner    :', owner)
       console.log('  market   :', market.key, '|', sym)
       console.log('  isLong   :', isLong)
-      console.log('  leverage :', Number(leverage))
+      console.log('  leverage :', _lev)
       console.log('  cRaw     :', cRaw.toString(), '(', collateralUsd, 'USDC)')
       console.log('  contract :', ADDRESSES.CROSS_MARGIN)
 
@@ -829,7 +854,7 @@ export function useTrading({ onSuccess, onError } = {}) {
       setStep('Simulating…')
       let needsPythUpdate = false
       try {
-        await cross.openPosition.staticCall(market.key, isLong, Number(leverage), cRaw, false, { from: owner })
+        await cross.openPosition.staticCall(market.key, isLong, _lev, cRaw, false, { from: owner })
         console.log('[crossOpenPosition] pre-Pyth simulation PASSED ✓ — no oracle update needed')
       } catch (simErr) {
         if (isInfraError(simErr)) {
@@ -860,7 +885,7 @@ export function useTrading({ onSuccess, onError } = {}) {
 
         setStep('Re-simulating…')
         try {
-          await cross.openPosition.staticCall(market.key, isLong, Number(leverage), cRaw, false, { from: owner })
+          await cross.openPosition.staticCall(market.key, isLong, _lev, cRaw, false, { from: owner })
           console.log('[crossOpenPosition] post-Pyth simulation PASSED ✓')
         } catch (simErr2) {
           if (!isInfraError(simErr2)) throw new Error(decodeSimError(simErr2))
@@ -869,7 +894,7 @@ export function useTrading({ onSuccess, onError } = {}) {
       }
 
       setStep(`Submitting cross ${isLong ? 'Long' : 'Short'}…`)
-      const tx      = await cross.openPosition(market.key, isLong, Number(leverage), cRaw, false, { gasLimit: 500_000 })
+      const tx      = await cross.openPosition(market.key, isLong, _lev, cRaw, false, { gasLimit: 500_000 })
       setStep('Confirming on Base…')
       const receipt = await waitTx(tx)
       return { hash: tx.hash, receipt }
