@@ -4,7 +4,7 @@ import { MARKETS, LEVERAGE_MARKS } from '@/config/markets'
 import { ADDRESSES, ABI_USDC, ABI_PERP_CONFIG } from '@/config/contracts'
 import { fmtPriceRaw, fmtUsdc, estLiqPrice } from '@/utils/format'
 import { getProvider, getReadProvider } from '@/hooks/useWallet'
-import { getOpenMarkForSide } from '@/utils/priceUtils'
+import { getLiveOpenPreviewMark } from '@/utils/priceUtils'
 
 /* ── USDC balance hook ──────────────────────────────────────────── */
 function useUsdcBalance(account, refreshKey) {
@@ -76,7 +76,7 @@ export function TradingPanel({ sym, prices, account, isConnecting, onTrade, onCo
   const displayMark = prices[sym]?.price || 0
   /* tradingMark: direction-aware contract mark for entry/liq price preview.
      null when contract marks unavailable — entry preview shows '—'. */
-  const tradingMark = getOpenMarkForSide(prices, sym, side === 'long')
+  const tradingMark = getLiveOpenPreviewMark(prices, sym, side === 'long')
   const col       = parseFloat(collateral) || 0
   const lim       = parseFloat(limitPrice) || displayMark
   const size      = col * leverage

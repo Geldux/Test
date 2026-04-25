@@ -383,6 +383,26 @@ export function useTrading({ onSuccess, onError } = {}) {
         if (rp2) {
           const store2 = new Contract(ADDRESSES.PERP_STORE, ABI_PERP_STORE, rp2)
           const cfg2   = new Contract(ADDRESSES.PERP_CONFIG, ABI_PERP_CONFIG, rp2)
+          /* DEV-only: compare VAA execution price vs live display estimate vs stored entry. */
+          if (import.meta.env.DEV) {
+            store2.getPosition(openedPosId).then((sp) => {
+              const entry    = Number(sp.entryPrice) / 1e18
+              const diagSnap = getCurrentPrice(sym)
+              const mS       = diagSnap?.markShort || 0
+              const mL       = diagSnap?.markLong  || 0
+              const hermes   = diagSnap?.price     || 0
+              const liveEst  = isLong ? (mS > 0 ? mS : hermes) : (mL > 0 ? mL : hermes)
+              const diff     = liveEst > 0
+                ? ((entry - liveEst) / liveEst * 100).toFixed(4) + '%'
+                : 'n/a'
+              console.log('[DEV] ── OPEN PRICE DIAGNOSTIC ──')
+              console.log('  market      :', sym, isLong ? 'LONG' : 'SHORT')
+              console.log('  VAA price   :', execSnap?.price, '← submitted to contract')
+              console.log('  live est    :', liveEst || 'n/a', '← current UI mark estimate')
+              console.log('  stored entry:', entry, '← contract-recorded entryPrice')
+              console.log('  entry vs live:', diff)
+            }).catch(() => {})
+          }
           Promise.all([
             store2.getPosition(openedPosId),
             cfg2.getMarkPrice(market.key, true),
@@ -407,35 +427,31 @@ export function useTrading({ onSuccess, onError } = {}) {
               console.warn('[openPosition] ⚠ entry differs from expected mark by >0.1% — check contract mark formula vs VAA price')
             }
             /* ── UI mark source audit ──
-               Mirrors getMarkForPos() logic from PositionsPanel to show exactly which
-               price source the UI is currently using for PnL display.  If markShort/
-               markLong are 0 in the cache (fetchOnChainData failed silently), the UI
-               falls back to Hermes mid — this block makes that visible immediately. */
+               Shows which source getLiveMarkForPosition uses for PnL display.
+               Contract mark (markShort/markLong) is preferred; Hermes mid is
+               the expected live estimate fallback when on-chain Pyth is stale. */
             const uiSnap     = getCurrentPrice(sym)
             const uiMrkShort = uiSnap?.markShort || 0
             const uiMrkLong  = uiSnap?.markLong  || 0
             const uiHermes   = uiSnap?.price     || 0
             const sizeUsd    = Number(storedPos.size) / 1e18
             const uiMrkUsed  = isLong
-              ? (uiMrkShort || uiHermes || uiMrkLong || entry)
-              : (uiMrkLong  || uiHermes || uiMrkShort || entry)
+              ? (uiMrkShort > 0 ? uiMrkShort : uiHermes || uiMrkLong || entry)
+              : (uiMrkLong  > 0 ? uiMrkLong  : uiHermes || uiMrkShort || entry)
             const uiMrkSrc   = isLong
-              ? (uiMrkShort > 0 ? 'markShort (correct bid)' : uiHermes > 0 ? 'Hermes.price (FALLBACK!)' : uiMrkLong > 0 ? 'markLong (wrong side!)' : 'entryPrice')
-              : (uiMrkLong  > 0 ? 'markLong (correct ask)'  : uiHermes > 0 ? 'Hermes.price (FALLBACK!)' : uiMrkShort > 0 ? 'markShort (wrong side!)' : 'entryPrice')
+              ? (uiMrkShort > 0 ? 'markShort (contract bid)' : uiHermes > 0 ? 'Hermes.price (live estimate)' : uiMrkLong > 0 ? 'markLong' : 'entryPrice')
+              : (uiMrkLong  > 0 ? 'markLong (contract ask)'  : uiHermes > 0 ? 'Hermes.price (live estimate)' : uiMrkShort > 0 ? 'markShort' : 'entryPrice')
             const uiPnlEst   = entry > 0 && uiMrkUsed > 0
               ? (isLong ? (uiMrkUsed - entry) / entry : (entry - uiMrkUsed) / entry) * sizeUsd
               : null
             console.log('[openPosition] ── UI MARK SOURCE AUDIT ──')
             console.log('  prices[sym].markShort :', uiMrkShort || '(zero/missing)')
             console.log('  prices[sym].markLong  :', uiMrkLong  || '(zero/missing)')
-            console.log('  prices[sym].price     :', uiHermes   || '(zero/missing)', '← Hermes mid')
-            console.log('  getMarkForPos source  :', uiMrkSrc)
-            console.log('  getMarkForPos value   :', uiMrkUsed)
+            console.log('  prices[sym].price     :', uiHermes   || '(zero/missing)', '← Hermes live estimate')
+            console.log('  getLiveMarkForPos src :', uiMrkSrc)
+            console.log('  getLiveMarkForPos val :', uiMrkUsed)
             console.log('  position sizeUsd      :', sizeUsd.toFixed(4))
             console.log('  UI est PnL (vs entry) :', uiPnlEst != null ? uiPnlEst.toFixed(4) : 'n/a', 'USD')
-            if (uiMrkSrc.includes('FALLBACK')) {
-              console.warn('[openPosition] ⚠ UI using Hermes mid for PnL — markLong/markShort absent from cache (fetchOnChainData likely failed due to stale on-chain Pyth)')
-            }
           }).catch((e) => console.warn('[openPosition] post-open audit read failed:', e?.message))
         }
       }

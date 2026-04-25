@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { MARKETS } from '@/config/markets'
 import { fmtUsdc, fmtPriceRaw, fmtLev, fmtAge, calcPnlUsd, fmtPnl, pnlClass, estLiqPrice } from '@/utils/format'
-import { getCloseMarkForPosition } from '@/utils/priceUtils'
+import { getLiveMarkForPosition } from '@/utils/priceUtils'
 
 /* resolve symbol from position assetKey */
 function symFromKey(assetKey) {
@@ -15,7 +15,7 @@ const ORDER_TYPE_LABEL = { 0: 'Limit', 1: 'Stop-Loss', 2: 'Take-Profit' }
 function CloseSheet({ pos, prices, onClose, onCancel, pending }) {
   const [pct, setPct] = useState(100)
   const sym  = symFromKey(pos.assetKey)
-  const mark = getCloseMarkForPosition(prices, pos)
+  const mark = getLiveMarkForPosition(prices, pos)
   const pnl  = mark != null ? calcPnlUsd(pos.entryPrice, mark, pos.isLong, pos.size) : null
   const est  = pnl != null  ? pnl * (pct / 100) : null
 
@@ -79,7 +79,7 @@ function CloseSheet({ pos, prices, onClose, onCancel, pending }) {
 /* ── Stop-Loss / Take-Profit sheet ──────────────────────────────── */
 function SlTpSheet({ pos, prices, type, onSubmit, onCancel, pending }) {
   const sym  = symFromKey(pos.assetKey)
-  const mark = getCloseMarkForPosition(prices, pos)
+  const mark = getLiveMarkForPosition(prices, pos)
   const def  = mark != null
     ? (type === 'sl'
         ? (pos.isLong ? mark * 0.95 : mark * 1.05).toFixed(2)
@@ -242,7 +242,7 @@ export function DesktopPositionsPanel({
                   <tbody>
                     {positions.map((pos) => {
                       const sym    = symFromKey(pos.assetKey)
-                      const mark   = getCloseMarkForPosition(prices, pos)
+                      const mark   = getLiveMarkForPosition(prices, pos)
                       const pnl    = mark != null ? calcPnlUsd(pos.entryPrice, mark, pos.isLong, pos.size) : null
                       const liq    = estLiqPrice(pos.entryPrice, pos.leverage, pos.isLong)
                       const isCross = crossAccount?.posIds?.includes(pos.id)
@@ -356,7 +356,7 @@ export function MobilePositionsList({ positions, orders = [], prices, loading, o
       {positions.length === 0 && <Empty msg="No open positions" />}
       {positions.map((pos) => {
         const sym     = symFromKey(pos.assetKey)
-        const mark    = getCloseMarkForPosition(prices, pos)
+        const mark    = getLiveMarkForPosition(prices, pos)
         const pnl     = mark != null ? calcPnlUsd(pos.entryPrice, mark, pos.isLong, pos.size) : null
         const liq     = estLiqPrice(pos.entryPrice, pos.leverage, pos.isLong)
         const open    = expanded === pos.id

@@ -1,5 +1,5 @@
 import { fmtUsdc, fmtPnl, pnlClass, calcPnlUsd } from '@/utils/format'
-import { getCloseMarkForPosition } from '@/utils/priceUtils'
+import { getLiveMarkForPosition } from '@/utils/priceUtils'
 
 /* ── Portfolio Summary ──────────────────────────────────────────────
    Live unrealized PnL from open positions + mark prices.
@@ -13,7 +13,7 @@ export function PortfolioSummary({ positions, prices, summary, historyLoading })
     let sum = 0
     let allPriced = true
     for (const pos of positions) {
-      const mark = getCloseMarkForPosition(prices, pos)
+      const mark = getLiveMarkForPosition(prices, pos)
       if (mark == null) { allPriced = false; continue }
       sum += calcPnlUsd(pos.entryPrice, mark, pos.isLong, pos.size)
     }
