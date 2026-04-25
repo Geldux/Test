@@ -1,5 +1,5 @@
-import { MARKETS } from '@/config/markets'
 import { fmtUsdc, fmtPnl, pnlClass, calcPnlUsd } from '@/utils/format'
+import { getCloseMarkForPosition } from '@/utils/priceUtils'
 
 /* ── Portfolio Summary ──────────────────────────────────────────────
    Live unrealized PnL from open positions + mark prices.
@@ -13,16 +13,8 @@ export function PortfolioSummary({ positions, prices, summary, historyLoading })
     let sum = 0
     let allPriced = true
     for (const pos of positions) {
-      const sym = MARKETS.find((m) => m.key === pos.assetKey)?.sym
-      const p   = sym ? prices[sym] : null
-      /* Direction-aware mark — same logic as getMarkForPos in PositionsPanel:
-         longs close at bid (markShort), shorts close at ask (markLong). */
-      const mark = p
-        ? (pos.isLong
-            ? (p.markShort || p.price || p.markLong || 0)
-            : (p.markLong  || p.price || p.markShort || 0))
-        : null
-      if (!mark) { allPriced = false; continue }
+      const mark = getCloseMarkForPosition(prices, pos)
+      if (mark == null) { allPriced = false; continue }
       sum += calcPnlUsd(pos.entryPrice, mark, pos.isLong, pos.size)
     }
     if (allPriced || sum !== 0) unrealizedPnl = sum

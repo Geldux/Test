@@ -8,6 +8,7 @@ import { usePoints }    from '@/hooks/usePoints'
 import { useVaultStats } from '@/hooks/useVaultStats'
 import { useHistory }    from '@/hooks/useHistory'
 import { fmtUsdc, fmtUsdcCompact, calcPnlUsd } from '@/utils/format'
+import { getCloseMarkForPosition } from '@/utils/priceUtils'
 import { MARKETS } from '@/config/markets'
 
 import { writeConfirmedTxToSupabase } from '@/services/historyService'
@@ -148,14 +149,11 @@ export default function App() {
     const pos = positions.find((p) => p.id === posId)
     const isCrossPos = crossAccount?.posIds?.includes(posId)
     const sym = MARKETS.find((m) => m.key === pos?.assetKey)?.sym ?? 'position'
-    /* Capture direction-aware mark at the instant the user initiates close */
-    const pSym = sym !== 'position' ? prices[sym] : null
-    const markAtClose = pSym
-      ? (pos?.isLong
-          ? (pSym.markShort || pSym.price || 0)
-          : (pSym.markLong  || pSym.price || 0))
-      : 0
-    const uiEstPnl = pos && markAtClose && pos.entryPrice
+    /* Capture direction-correct contract mark at the instant the user initiates close.
+       Uses getCloseMarkForPosition — same source as PositionsPanel PnL display.
+       null when contract marks unavailable (same condition that shows '—' in the UI). */
+    const markAtClose = pos ? getCloseMarkForPosition(prices, pos) : null
+    const uiEstPnl = pos && markAtClose != null && pos.entryPrice
       ? calcPnlUsd(pos.entryPrice, markAtClose, pos.isLong, pos.size)
       : null
     try {

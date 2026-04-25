@@ -4,6 +4,7 @@ import { MARKETS, LEVERAGE_MARKS } from '@/config/markets'
 import { ADDRESSES, ABI_USDC, ABI_PERP_CONFIG } from '@/config/contracts'
 import { fmtPriceRaw, fmtUsdc, estLiqPrice } from '@/utils/format'
 import { getProvider, getReadProvider } from '@/hooks/useWallet'
+import { getOpenMarkForSide } from '@/utils/priceUtils'
 
 /* ── USDC balance hook ──────────────────────────────────────────── */
 function useUsdcBalance(account, refreshKey) {
@@ -71,12 +72,11 @@ export function TradingPanel({ sym, prices, account, isConnecting, onTrade, onCo
   const activeBal = isCross ? crossBal : usdcBal
 
   const market      = MARKETS.find((m) => m.sym === sym) || MARKETS[0]
-  /* displayMark: Hermes mid for visual reference (limit price placeholder, chart) */
+  /* displayMark: Hermes mid for visual reference only (limit price placeholder) */
   const displayMark = prices[sym]?.price || 0
-  /* tradingMark: direction-aware contract mark for entry/liq price preview */
-  const tradingMark = side === 'long'
-    ? (prices[sym]?.markLong  || prices[sym]?.price || 0)
-    : (prices[sym]?.markShort || prices[sym]?.price || 0)
+  /* tradingMark: direction-aware contract mark for entry/liq price preview.
+     null when contract marks unavailable — entry preview shows '—'. */
+  const tradingMark = getOpenMarkForSide(prices, sym, side === 'long')
   const col       = parseFloat(collateral) || 0
   const lim       = parseFloat(limitPrice) || displayMark
   const size      = col * leverage
