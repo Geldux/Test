@@ -67,6 +67,19 @@ export function buildSummaryFromEntries(entries) {
     if (e.type === 'withdraw')      totalWithdrawals += e.amount ?? 0
     if (e.type === 'open' && e.size != null) totalVolume += e.size
   }
+  if (import.meta.env.DEV) {
+    const closeRows = entries.filter((e) => e.type === 'close' && e.status !== 'failed' && e.status !== 'cancelled')
+    const withPnl   = closeRows.filter((e) => e.pnl != null)
+    const skipped   = closeRows.filter((e) => e.pnl == null)
+    console.log(
+      '[realized PnL audit]',
+      'closed=' + closeRows.length,
+      'withPnl=' + withPnl.length,
+      'skipped=' + skipped.length,
+      'total=' + realizedPnl.toFixed(4),
+      'hashes=[' + closeRows.map((e) => (e.hash || '').slice(0, 10)).join(', ') + ']',
+    )
+  }
   return { tradeCount, closedCount, realizedPnl, totalDeposits, totalWithdrawals, totalVolume }
 }
 

@@ -11,7 +11,7 @@ import { fmtUsdc, fmtUsdcCompact, calcPnlUsd } from '@/utils/format'
 import { getLiveMarkForPosition } from '@/utils/priceUtils'
 import { MARKETS } from '@/config/markets'
 
-import { writeConfirmedTxToSupabase } from '@/services/historyService'
+import { writeConfirmedTxToSupabase, buildSummaryFromEntries } from '@/services/historyService'
 import { toast }           from '@/components/Toast'
 import { DesktopHeader, MobileHeader } from '@/components/Header'
 import { DesktopMarketBar, MobileMarketChips } from '@/components/MarketBar'
@@ -50,7 +50,7 @@ export default function App() {
   const { prices, oi, funding }                            = usePrices()
   const { positions, orders, crossAccount, loading, refresh } = usePositions(account)
   const { stats: vaultStats }                              = useVaultStats()
-  const { entries: histEntries, summary: histSummary,
+  const { entries: histEntries,
           loading: histLoading, reload: histReload,
           error: histError }                               = useHistory(account)
 
@@ -91,6 +91,9 @@ export default function App() {
     const histHashes = new Set(histEntries.map((e) => e.hash))
     return [...localTxs.filter((e) => !histHashes.has(e.hash)), ...histEntries]
   }, [localTxs, histEntries])
+
+  /* Summary from merged entries — includes fast-path close pnl from receipt parsing */
+  const displaySummary = useMemo(() => buildSummaryFromEntries(displayEntries), [displayEntries])
 
   /* ── UI state ─────────────────────────────────────────────────── */
   const [page,         setPage]         = useState('trade')     // trade | spot | portfolio | rewards
@@ -426,7 +429,7 @@ export default function App() {
               <div style={{ padding: 24 }}>
                 <PortfolioSummary
                   positions={positions} prices={prices}
-                  summary={histSummary} historyLoading={histLoading}
+                  summary={displaySummary} historyLoading={histLoading}
                 />
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24 }}>
                   <div>
@@ -668,7 +671,7 @@ export default function App() {
                 {/* Portfolio summary */}
                 <PortfolioSummary
                   positions={positions} prices={prices}
-                  summary={histSummary} historyLoading={histLoading}
+                  summary={displaySummary} historyLoading={histLoading}
                 />
 
                 {/* Cross margin */}

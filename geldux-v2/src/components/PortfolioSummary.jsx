@@ -1,5 +1,8 @@
 import { fmtUsdc, fmtPnl, pnlClass, calcPnlUsd } from '@/utils/format'
 import { getLiveMarkForPosition } from '@/utils/priceUtils'
+import { MARKETS } from '@/config/markets'
+
+let _lastPnlDiagTs = 0
 
 /* ── Portfolio Summary ──────────────────────────────────────────────
    Live unrealized PnL from open positions + mark prices.
@@ -12,10 +15,25 @@ export function PortfolioSummary({ positions, prices, summary, historyLoading })
   if (positions.length > 0) {
     let sum = 0
     let allPriced = true
+    const diagRows = []
     for (const pos of positions) {
       const mark = getLiveMarkForPosition(prices, pos)
       if (mark == null) { allPriced = false; continue }
-      sum += calcPnlUsd(pos.entryPrice, mark, pos.isLong, pos.size)
+      const pnl = calcPnlUsd(pos.entryPrice, mark, pos.isLong, pos.size)
+      sum += pnl
+      if (import.meta.env.DEV) {
+        const sym = MARKETS.find((m) => m.key === pos.assetKey)?.sym ?? '?'
+        diagRows.push({ posId: pos.id, sym, isLong: pos.isLong, entry: pos.entryPrice, mark, size: pos.size, pnl, dir: pos.isLong ? '(mark-entry)/entry*size' : '(entry-mark)/entry*size' })
+      }
+    }
+    if (import.meta.env.DEV) {
+      const now = Date.now()
+      if (diagRows.length > 0 && now - _lastPnlDiagTs > 30_000) {
+        _lastPnlDiagTs = now
+        console.group('[PnL audit] per-position unrealized')
+        diagRows.forEach((r) => console.log(`  posId=${r.posId} sym=${r.sym} isLong=${r.isLong} entry=${r.entry?.toFixed(2)} mark=${r.mark?.toFixed(2)} size=${r.size?.toFixed(2)} pnl=${r.pnl?.toFixed(4)} dir=${r.dir}`))
+        console.groupEnd()
+      }
     }
     if (allPriced || sum !== 0) unrealizedPnl = sum
   } else {
