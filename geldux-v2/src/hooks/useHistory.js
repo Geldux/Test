@@ -1,32 +1,25 @@
 /**
- * useHistory — on-chain event history for the connected wallet.
+ * useHistory — on-chain event history for the connected wallet (Geldux Perp V2).
  *
- * Loading strategy:
- *   1. If Supabase is configured, read cached rows and display them immediately.
- *   2. Scan only the block range newer than the latest cached block (incremental).
- *   3. Persist new on-chain events back to Supabase (fire-and-forget).
- *   4. Without Supabase, full on-chain scan up to MAX_LOOKBACK.
+ * GelduxPerpCore events (all on ADDRESSES.CORE):
+ *   IsolatedPositionOpened   — isolated open
+ *   IsolatedPositionClosed   — isolated close
+ *   CrossDeposited           — cross margin deposit
+ *   CrossWithdrawn           — cross margin withdrawal
+ *   CrossPositionOpened      — cross open
+ *   CrossPositionClosed      — cross close
+ *   CrossPositionIncreased   — cross size add (no trader index — filtered by known posIds)
  *
- * Perp / futures coverage:
- *   PerpCore.Opened               — isolated open
- *   PerpCore.Closed               — isolated close (matched via posId)
- *   CrossMargin.Deposited         — cross margin deposit
- *   CrossMargin.Withdrawn         — cross margin withdrawal
- *   CrossMargin.PositionOpened    — cross open
- *   CrossMargin.PositionClosed    — cross close
- *   CrossMargin.PositionIncreased — cross collateral add
- *   OrderManager.OrderCreated     — limit / SL / TP placed
- *   OrderManager.OrderCancelled   — order cancelled
- *
- * NOT trackable from events (contract limitation):
- *   PerpCore isolated increases — increaseWithPermitAndPriceUpdate emits no event.
- *   OrderExecuted               — indexes the keeper, not the trader.
+ * GelduxOrderRouter events (on ADDRESSES.ROUTER):
+ *   OrderExecuted            — order executed by keeper
+ *   OrderCancelled           — order cancelled by trader
  */
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { Contract } from 'ethers'
 import {
-  ADDRESSES, ABI_PERP_CORE, ABI_CROSS_MARGIN, ABI_ORDER_MANAGER,
+  ADDRESSES, ABI_PERP_CORE, ABI_ROUTER,
 } from '@/config/contracts'
+import { USDC_DECIMALS } from '@/config/chain'
 import { MARKETS } from '@/config/markets'
 import { getHistoryProvider } from './useWallet'
 import { HAS_ALCHEMY_HISTORY, HISTORY_RPC_LIST } from '@/config/chain'
@@ -35,6 +28,8 @@ import {
 } from '@/services/historyService'
 
 export { BASESCAN_TX } from '@/services/historyService'
+
+const D_USDC = 10 ** USDC_DECIMALS
 
 const CHUNK_SIZE   = 1_000
 const CONCURRENCY  = 1
@@ -78,97 +73,97 @@ function estimateTs(blockNumber, currentBlock) {
   return Math.floor(Date.now() / 1000) - (currentBlock - blockNumber) * 2
 }
 
-/**
- * Build normalized entry objects from raw event accumulator.
- * posIdLookup resolves close events whose matching open lives in the
- * Supabase cache rather than the current scan window.
- *   posIdLookup shape: { [posId]: { sym, isLong, leverage, collateral } }
- */
 function buildEntries(acc, currentBlock, posIdLookup = {}) {
   const {
-    opened, closedAll, deposited, withdrawn,
+    opened, closed,
+    deposited, withdrawn,
     xOpened, xClosed, xIncreased,
-    ordersCreated, ordersCancelled,
+    ordersExecuted, ordersCancelled,
   } = acc
 
-  const userPosIds = new Set([
+  /* Cross increase: no trader indexed — filter to only positions we opened */
+  const knownPosIds = new Set([
     ...opened.map((e) => e.args.posId.toString()),
+    ...xOpened.map((e) => e.args.posId.toString()),
     ...Object.keys(posIdLookup),
   ])
-  const closedMine = closedAll.filter((e) => userPosIds.has(e.args.posId.toString()))
+  const xIncreasedMine = xIncreased.filter((e) => knownPosIds.has(e.args.posId.toString()))
 
   const all = []
 
   opened.forEach((e) => {
-    const { posId, key, isLong, leverage, collateral } = e.args
-    const col = Number(collateral) / 1e18
+    const { posId, market, isLong, sizeUsd, collateral } = e.args
     all.push({
       type: 'open', hash: e.transactionHash, status: 'confirmed', mode: 'isolated',
       blockNumber: e.blockNumber, ts: estimateTs(e.blockNumber, currentBlock),
-      sym: symFromKey(key), isLong, posId: posId.toString(),
-      leverage: Number(leverage), collateral: col, size: col * Number(leverage),
+      sym: symFromKey(market), isLong, posId: posId.toString(),
+      leverage: null,
+      collateral: Number(collateral) / D_USDC,
+      size: Number(sizeUsd) / D_USDC,
       pnl: null, amount: null, label: null, entryPrice: null,
     })
   })
 
-  closedMine.forEach((e) => {
-    const { posId, pnl } = e.args
+  closed.forEach((e) => {
+    const { posId, pnl, payout } = e.args
     const posIdStr  = posId.toString()
     const fromAcc   = opened.find((o) => o.args.posId.toString() === posIdStr)
     const fromCache = posIdLookup[posIdStr]
     all.push({
       type: 'close', hash: e.transactionHash, status: 'confirmed', mode: 'isolated',
       blockNumber: e.blockNumber, ts: estimateTs(e.blockNumber, currentBlock),
-      sym:        fromAcc ? symFromKey(fromAcc.args.key)       : (fromCache?.sym        ?? '?'),
-      isLong:     fromAcc ? fromAcc.args.isLong                : (fromCache?.isLong     ?? null),
+      sym:        fromAcc ? symFromKey(fromAcc.args.market) : (fromCache?.sym   ?? '?'),
+      isLong:     fromAcc ? fromAcc.args.isLong              : (fromCache?.isLong ?? null),
       posId:      posIdStr,
-      leverage:   fromAcc ? Number(fromAcc.args.leverage)      : (fromCache?.leverage   ?? null),
-      collateral: fromAcc ? Number(fromAcc.args.collateral) / 1e18 : (fromCache?.collateral ?? null),
-      size: fromAcc
-        ? (Number(fromAcc.args.collateral) / 1e18) * Number(fromAcc.args.leverage)
-        : fromCache ? (fromCache.collateral ?? 0) * (fromCache.leverage ?? 1) : null,
-      pnl: Number(pnl) / 1e18, amount: null, label: null, entryPrice: null,
+      leverage:   null,
+      collateral: fromAcc ? Number(fromAcc.args.collateral) / D_USDC : (fromCache?.collateral ?? null),
+      size:       fromAcc ? Number(fromAcc.args.sizeUsd)    / D_USDC : (fromCache?.size ?? null),
+      pnl:        Number(pnl)    / D_USDC,
+      amount:     Number(payout) / D_USDC,
+      label: null, entryPrice: null,
     })
   })
 
   xOpened.forEach((e) => {
-    const { posId, key } = e.args
+    const { posId, market, isLong, sizeUsd } = e.args
     all.push({
       type: 'cross_open', hash: e.transactionHash, status: 'confirmed', mode: 'cross',
       blockNumber: e.blockNumber, ts: estimateTs(e.blockNumber, currentBlock),
-      sym: symFromKey(key), isLong: null, posId: posId.toString(),
-      leverage: null, collateral: null, size: null, pnl: null, amount: null, label: null, entryPrice: null,
+      sym: symFromKey(market), isLong, posId: posId.toString(),
+      leverage: null, collateral: null, size: Number(sizeUsd) / D_USDC,
+      pnl: null, amount: null, label: null, entryPrice: null,
     })
   })
 
-  /* xClosed and xIncreased filters already include account — no posId filter needed */
   xClosed.forEach((e) => {
-    const { posId, payout } = e.args
+    const { posId, pnl } = e.args
     const posIdStr  = posId.toString()
     const fromAcc   = xOpened.find((o) => o.args.posId.toString() === posIdStr)
     const fromCache = posIdLookup[posIdStr]
     all.push({
       type: 'cross_close', hash: e.transactionHash, status: 'confirmed', mode: 'cross',
       blockNumber: e.blockNumber, ts: estimateTs(e.blockNumber, currentBlock),
-      sym: fromAcc ? symFromKey(fromAcc.args.key) : (fromCache?.sym ?? '?'),
-      isLong: null, posId: posIdStr,
+      sym:    fromAcc ? symFromKey(fromAcc.args.market) : (fromCache?.sym ?? '?'),
+      isLong: fromAcc ? fromAcc.args.isLong              : (fromCache?.isLong ?? null),
+      posId:  posIdStr,
       leverage: null, collateral: null, size: null,
-      pnl: null, amount: Number(payout) / 1e18, label: null, entryPrice: null,
+      pnl: Number(pnl) / D_USDC, amount: null, label: null, entryPrice: null,
     })
   })
 
-  xIncreased.forEach((e) => {
-    const { posId, extra } = e.args
+  xIncreasedMine.forEach((e) => {
+    const { posId, addedSize } = e.args
     const posIdStr  = posId.toString()
     const fromAcc   = xOpened.find((o) => o.args.posId.toString() === posIdStr)
     const fromCache = posIdLookup[posIdStr]
     all.push({
       type: 'cross_increase', hash: e.transactionHash, status: 'confirmed', mode: 'cross',
       blockNumber: e.blockNumber, ts: estimateTs(e.blockNumber, currentBlock),
-      sym: fromAcc ? symFromKey(fromAcc.args.key) : (fromCache?.sym ?? '?'),
-      isLong: null, posId: posIdStr,
+      sym:    fromAcc ? symFromKey(fromAcc.args.market) : (fromCache?.sym ?? '?'),
+      isLong: fromAcc ? fromAcc.args.isLong              : (fromCache?.isLong ?? null),
+      posId:  posIdStr,
       leverage: null, collateral: null, size: null,
-      pnl: null, amount: Number(extra) / 1e18, label: null, entryPrice: null,
+      pnl: null, amount: Number(addedSize) / D_USDC, label: null, entryPrice: null,
     })
   })
 
@@ -178,7 +173,7 @@ function buildEntries(acc, currentBlock, posIdLookup = {}) {
       blockNumber: e.blockNumber, ts: estimateTs(e.blockNumber, currentBlock),
       sym: '', isLong: null, posId: null,
       leverage: null, collateral: null, size: null,
-      pnl: null, amount: Number(e.args.amt) / 1e18, label: null, entryPrice: null,
+      pnl: null, amount: Number(e.args.amount) / D_USDC, label: null, entryPrice: null,
     })
   })
 
@@ -188,30 +183,30 @@ function buildEntries(acc, currentBlock, posIdLookup = {}) {
       blockNumber: e.blockNumber, ts: estimateTs(e.blockNumber, currentBlock),
       sym: '', isLong: null, posId: null,
       leverage: null, collateral: null, size: null,
-      pnl: null, amount: Number(e.args.amt) / 1e18, label: null, entryPrice: null,
+      pnl: null, amount: Number(e.args.amount) / D_USDC, label: null, entryPrice: null,
     })
   })
 
-  ordersCreated.forEach((e) => {
-    const { id, t: orderType } = e.args
+  ordersExecuted.forEach((e) => {
+    const { market, nonce, orderType } = e.args
     all.push({
       type: 'order_created', hash: e.transactionHash, status: 'confirmed', mode: null,
       blockNumber: e.blockNumber, ts: estimateTs(e.blockNumber, currentBlock),
-      sym: '', isLong: null, posId: null,
+      sym: symFromKey(market), isLong: null, posId: null,
       leverage: null, collateral: null, size: null,
       pnl: null, amount: null,
-      label: ORDER_TYPE_LABEL[Number(orderType)] ?? 'Order', orderId: Number(id), entryPrice: null,
+      label: ORDER_TYPE_LABEL[Number(orderType)] ?? 'Order', orderId: Number(nonce), entryPrice: null,
     })
   })
 
   ordersCancelled.forEach((e) => {
-    const { id } = e.args
+    const { nonce } = e.args
     all.push({
       type: 'order_cancelled', hash: e.transactionHash, status: 'confirmed', mode: null,
       blockNumber: e.blockNumber, ts: estimateTs(e.blockNumber, currentBlock),
       sym: '', isLong: null, posId: null,
       leverage: null, collateral: null, size: null,
-      pnl: null, amount: null, label: 'Order', orderId: Number(id), entryPrice: null,
+      pnl: null, amount: null, label: 'Order', orderId: Number(nonce), entryPrice: null,
     })
   })
 
@@ -219,15 +214,10 @@ function buildEntries(acc, currentBlock, posIdLookup = {}) {
   return all
 }
 
-/* Merge two sorted arrays, deduplicated by hash+type.
-   On conflict, fresh (confirmed) entry wins over cached (pending).
-   Pending entries (blockNumber=0) sort to top so they appear immediately. */
 function mergeEntries(cached, fresh) {
   const freshKeys = new Set(fresh.map((e) => `${e.hash}|${e.type}`))
   const out = [
-    /* fresh entries always take priority */
     ...fresh,
-    /* cached entries that fresh has NOT superseded */
     ...cached.filter((e) => !freshKeys.has(`${e.hash}|${e.type}`)),
   ]
   out.sort((a, b) => {
@@ -290,7 +280,6 @@ export function useHistory(account) {
     try {
       const currentBlock = await rp.getBlockNumber()
 
-      /* ── Fast path: serve Supabase-cached history immediately ───── */
       let cachedEntries = []
       let fromBlock     = Math.max(0, currentBlock - MAX_LOOKBACK)
 
@@ -302,38 +291,26 @@ export function useHistory(account) {
             setEntries(cachedEntries)
             setSummary(buildSummaryFromEntries(cachedEntries))
           }
-          /* Incremental scan — only fetch blocks newer than the cache */
           if (cached.latestBlock > 0) fromBlock = cached.latestBlock + 1
         }
       }
 
       if (!mountedRef.current) return
 
-      /* Build posId lookup so incremental closes can be enriched from cache */
       const posIdLookup = {}
       for (const e of cachedEntries) {
         if ((e.type === 'open' || e.type === 'cross_open') && e.posId) {
-          posIdLookup[e.posId] = {
-            sym: e.sym, isLong: e.isLong, leverage: e.leverage, collateral: e.collateral,
-          }
+          posIdLookup[e.posId] = { sym: e.sym, isLong: e.isLong, leverage: e.leverage, collateral: e.collateral }
         }
       }
 
-      if (import.meta.env.DEV) {
-        console.log(
-          `[useHistory] scanning ${fromBlock}–${currentBlock} for ${account.slice(0, 8)}…`,
-          `(Supabase: ${HAS_SUPABASE}, dedicated RPC: ${HAS_ALCHEMY_HISTORY})`
-        )
-      }
-
-      const core     = new Contract(ADDRESSES.PERP_CORE,     ABI_PERP_CORE,     rp)
-      const cross    = new Contract(ADDRESSES.CROSS_MARGIN,  ABI_CROSS_MARGIN,  rp)
-      const orderMgr = new Contract(ADDRESSES.ORDER_MANAGER, ABI_ORDER_MANAGER, rp)
+      const core   = new Contract(ADDRESSES.CORE,   ABI_PERP_CORE, rp)
+      const router = new Contract(ADDRESSES.ROUTER,  ABI_ROUTER,    rp)
 
       const acc = {
-        opened: [], closedAll: [], deposited: [], withdrawn: [],
+        opened: [], closed: [], deposited: [], withdrawn: [],
         xOpened: [], xClosed: [], xIncreased: [],
-        ordersCreated: [], ordersCancelled: [],
+        ordersExecuted: [], ordersCancelled: [],
       }
 
       let toBlock    = currentBlock
@@ -350,52 +327,42 @@ export function useHistory(account) {
         }
 
         const [
-          opened, closedAll,
+          opened, closed,
           deposited, withdrawn,
           xOpened, xClosed, xIncreased,
-          ordersCreated, ordersCancelled,
+          ordersExecuted, ordersCancelled,
         ] = await Promise.all([
-          queryChunked(core,     core.filters.Opened(null, account),              batchFrom, toBlock, 'Opened'),
-          queryChunked(core,     core.filters.Closed(),                            batchFrom, toBlock, 'Closed'),
-          queryChunked(cross,    cross.filters.Deposited(account),                batchFrom, toBlock, 'Deposited'),
-          queryChunked(cross,    cross.filters.Withdrawn(account),                batchFrom, toBlock, 'Withdrawn'),
-          queryChunked(cross,    cross.filters.PositionOpened(account),           batchFrom, toBlock, 'PositionOpened'),
-          queryChunked(cross,    cross.filters.PositionClosed(account),           batchFrom, toBlock, 'PositionClosed'),
-          queryChunked(cross,    cross.filters.PositionIncreased(account),        batchFrom, toBlock, 'PositionIncreased'),
-          queryChunked(orderMgr, orderMgr.filters.OrderCreated(null, account),   batchFrom, toBlock, 'OrderCreated'),
-          queryChunked(orderMgr, orderMgr.filters.OrderCancelled(null, account), batchFrom, toBlock, 'OrderCancelled'),
+          queryChunked(core, core.filters.IsolatedPositionOpened(null, account),  batchFrom, toBlock, 'IsolatedPositionOpened'),
+          queryChunked(core, core.filters.IsolatedPositionClosed(null, account),  batchFrom, toBlock, 'IsolatedPositionClosed'),
+          queryChunked(core, core.filters.CrossDeposited(account),                batchFrom, toBlock, 'CrossDeposited'),
+          queryChunked(core, core.filters.CrossWithdrawn(account),                batchFrom, toBlock, 'CrossWithdrawn'),
+          queryChunked(core, core.filters.CrossPositionOpened(null, account),     batchFrom, toBlock, 'CrossPositionOpened'),
+          queryChunked(core, core.filters.CrossPositionClosed(null, account),     batchFrom, toBlock, 'CrossPositionClosed'),
+          queryChunked(core, core.filters.CrossPositionIncreased(),               batchFrom, toBlock, 'CrossPositionIncreased'),
+          queryChunked(router, router.filters.OrderExecuted(account),             batchFrom, toBlock, 'OrderExecuted'),
+          queryChunked(router, router.filters.OrderCancelled(account),            batchFrom, toBlock, 'OrderCancelled'),
         ])
 
         if (!mountedRef.current) return
 
-        if (batchIndex === 1) {
-          if (import.meta.env.DEV) {
-            console.log('[useHistory] first batch results:', {
-              opened: opened.length, closedAll: closedAll.length,
-              deposited: deposited.length, xOpened: xOpened.length,
-              ordersCreated: ordersCreated.length,
-            })
-          }
-          const total = opened.length + deposited.length + xOpened.length + ordersCreated.length
-          if (total === 0) {
-            console.warn(
-              '[useHistory] zero events in first batch — possible rate-limit.\n' +
-              '  Set VITE_PRIMARY_RPC in .env.local for a dedicated RPC endpoint.'
-            )
-          }
+        if (batchIndex === 1 && import.meta.env.DEV) {
+          console.log('[useHistory] first batch results:', {
+            opened: opened.length, closed: closed.length,
+            deposited: deposited.length, xOpened: xOpened.length,
+            ordersExecuted: ordersExecuted.length,
+          })
         }
 
         acc.opened.push(...opened)
-        acc.closedAll.push(...closedAll)
+        acc.closed.push(...closed)
         acc.deposited.push(...deposited)
         acc.withdrawn.push(...withdrawn)
         acc.xOpened.push(...xOpened)
         acc.xClosed.push(...xClosed)
         acc.xIncreased.push(...xIncreased)
-        acc.ordersCreated.push(...ordersCreated)
+        acc.ordersExecuted.push(...ordersExecuted)
         acc.ordersCancelled.push(...ordersCancelled)
 
-        /* Progressive display: rebuild from full accumulated acc after each batch */
         const freshEntries = buildEntries(acc, currentBlock, posIdLookup)
         setEntries(mergeEntries(cachedEntries, freshEntries))
         setSummary(buildSummaryFromEntries(mergeEntries(cachedEntries, freshEntries)))
@@ -403,12 +370,9 @@ export function useHistory(account) {
         toBlock = batchFrom - 1
       }
 
-      /* Persist new on-chain events to Supabase (fire-and-forget) */
       const finalFresh = buildEntries(acc, currentBlock, posIdLookup)
       if (finalFresh.length > 0) {
         writeToSupabase(finalFresh, account)
-      } else {
-        console.warn('[useHistory] scan complete — 0 new events found; Supabase write skipped')
       }
 
     } catch (e) {

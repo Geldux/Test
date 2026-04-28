@@ -3,8 +3,12 @@
  */
 export {
   ABI_USDC,
-  ABI_PYTH,
+  ABI_ORACLE,
+  ABI_VAULT,
   ABI_PERP_CORE,
+  ABI_ROUTER,
+  ABI_PYTH,
+  /* Legacy stubs — empty arrays kept for any remaining import sites */
   ABI_PERP_CONFIG,
   ABI_PERP_STORE,
   ABI_PERP_VAULT,

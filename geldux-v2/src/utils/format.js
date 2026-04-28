@@ -1,4 +1,5 @@
 import { formatUnits } from 'ethers'
+import { USDC_DECIMALS } from '@/config/chain'
 
 /* ── Price ───────────────────────────────────────────────────────────── */
 export function fmtPrice(raw, sym = '') {
@@ -18,17 +19,17 @@ export function fmtPriceRaw(n) {
   return '$' + v.toFixed(4)
 }
 
-/* ── USDC amounts (18-decimal BigInt or plain number) ─────────────────── */
+/* ── USDC amounts (6-decimal BigInt or plain number) ──────────────────── */
 export function fmtUsdc(raw) {
   if (raw == null) return '—'
-  const n = typeof raw === 'bigint' ? Number(formatUnits(raw, 18)) : Number(raw)
+  const n = typeof raw === 'bigint' ? Number(formatUnits(raw, USDC_DECIMALS)) : Number(raw)
   if (!isFinite(n)) return '—'
   return '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
 
 export function fmtUsdcCompact(raw) {
   if (raw == null) return '—'
-  const n = typeof raw === 'bigint' ? Number(formatUnits(raw, 18)) : Number(raw)
+  const n = typeof raw === 'bigint' ? Number(formatUnits(raw, USDC_DECIMALS)) : Number(raw)
   if (!isFinite(n)) return '—'
   if (Math.abs(n) >= 1_000_000) return (n / 1_000_000).toFixed(2) + 'M'
   if (Math.abs(n) >= 1_000)     return (n / 1_000).toFixed(2) + 'K'

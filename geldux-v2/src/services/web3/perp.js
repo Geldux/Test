@@ -1,17 +1,21 @@
-/**
- * Isolated perpetuals service — PerpCore interactions.
- *
- * openPosition()      1-click: permit + pyth update + open
- * increasePosition()  1-click: permit + pyth update + increase collateral
- * closePosition()     pyth update + close in one tx
- * fetchPositions()    read all open positions for an address
- */
 import { Contract, parseUnits } from 'ethers'
-import { ADDRESSES, ABI_PERP_CORE, ABI_PERP_STORE } from '@/config/contracts'
+import { ADDRESSES, ABI_PERP_CORE } from '@/config/contracts'
 import { MARKETS } from '@/config/markets'
+import { USDC_DECIMALS, PRICE_DECIMALS } from '@/config/chain'
 import { getSigner, getReadProvider } from './wallet'
 import { signPermit } from './usdcPermit'
 import { getPythUpdateArgs } from './oracle'
+
+const D_USDC  = 10 ** USDC_DECIMALS
+const D_PRICE = 10 ** PRICE_DECIMALS
+const SLIPPAGE = 0.01
+
+function _accPrice(markPrice, isLong, isOpen) {
+  if (!markPrice) return 0n
+  const wantMax = (isLong && isOpen) || (!isLong && !isOpen)
+  const price   = wantMax ? markPrice * (1 + SLIPPAGE) : markPrice * (1 - SLIPPAGE)
+  return parseUnits(price.toFixed(18), 18)
+}
 
 async function waitTx(tx) {
   const receipt = await tx.wait(1)
@@ -19,137 +23,81 @@ async function waitTx(tx) {
   return receipt
 }
 
-/**
- * Open an isolated perp position with a single user signature.
- *
- * @param {{ sym: string, isLong: boolean, leverage: number, collateralUsd: number }} params
- * @returns {{ hash: string, posId?: bigint, receipt: object }}
- */
-export async function openPosition({ sym, isLong, leverage, collateralUsd }) {
+export async function openPosition({ sym, isLong, leverage, collateralUsd, markPrice }) {
   const signer  = getSigner()
   if (!signer) throw new Error('Wallet not connected')
   const market  = MARKETS.find((m) => m.sym === sym)
   if (!market)  throw new Error(`Unknown market: ${sym}`)
 
-  const collateralRaw = parseUnits(String(Number(collateralUsd).toFixed(18)), 18)
+  const collateralRaw = parseUnits(String(Number(collateralUsd).toFixed(USDC_DECIMALS)), USDC_DECIMALS)
+  const sizeUsdRaw    = parseUnits(String((Number(collateralUsd) * Number(leverage)).toFixed(USDC_DECIMALS)), USDC_DECIMALS)
+  const accPrice      = _accPrice(markPrice, isLong, true)
 
   const [permit, { updateData, fee }] = await Promise.all([
-    signPermit(signer, ADDRESSES.PERP_VAULT, collateralRaw),
+    signPermit(signer, ADDRESSES.CORE, collateralRaw),
     getPythUpdateArgs(signer),
   ])
 
-  const core = new Contract(ADDRESSES.PERP_CORE, ABI_PERP_CORE, signer)
-  const tx   = await core.openWithPermitAndPriceUpdate(
-    market.key,
-    isLong,
-    leverage,
-    collateralRaw,
-    false,               /* reduceOnly */
-    permit.deadline,
-    permit.v,
-    permit.r,
-    permit.s,
-    updateData,
-    { value: fee }
+  const core = new Contract(ADDRESSES.CORE, ABI_PERP_CORE, signer)
+  const tx   = await core.openIsolatedWithPermitAndPriceUpdate(
+    market.key, isLong, collateralRaw, sizeUsdRaw, accPrice,
+    permit.deadline, permit.v, permit.r, permit.s,
+    updateData, { value: fee }
   )
   const receipt = await waitTx(tx)
-  /* Parse posId from Opened event if present */
-  const openedEvent = receipt.logs
+  const event   = receipt.logs
     ?.map((log) => { try { return core.interface.parseLog(log) } catch { return null } })
-    ?.find((e) => e?.name === 'Opened')
-  return { hash: tx.hash, receipt, posId: openedEvent?.args?.posId }
+    ?.find((e) => e?.name === 'IsolatedPositionOpened')
+  return { hash: tx.hash, receipt, posId: event?.args?.posId }
 }
 
-/**
- * Add collateral to an existing isolated position.
- *
- * @param {{ posId: number|bigint, collateralUsd: number }} params
- */
-export async function increasePosition({ posId, collateralUsd }) {
+export async function closePosition({ sym, isLong, markPrice }) {
   const signer = getSigner()
   if (!signer) throw new Error('Wallet not connected')
+  const market = MARKETS.find((m) => m.sym === sym)
+  if (!market)  throw new Error(`Unknown market: ${sym}`)
 
-  const extra = parseUnits(String(Number(collateralUsd).toFixed(18)), 18)
-
-  const [permit, { updateData, fee }] = await Promise.all([
-    signPermit(signer, ADDRESSES.PERP_VAULT, extra),
-    getPythUpdateArgs(signer),
-  ])
-
-  const core    = new Contract(ADDRESSES.PERP_CORE, ABI_PERP_CORE, signer)
-  const tx      = await core.increaseWithPermitAndPriceUpdate(
-    posId, extra, permit.deadline, permit.v, permit.r, permit.s, updateData, { value: fee }
-  )
+  const accPrice             = _accPrice(markPrice, isLong, false)
+  const { updateData, fee }  = await getPythUpdateArgs(signer)
+  const core    = new Contract(ADDRESSES.CORE, ABI_PERP_CORE, signer)
+  const tx      = await core.closeIsolatedWithPriceUpdate(market.key, isLong, accPrice, updateData, { value: fee })
   const receipt = await waitTx(tx)
   return { hash: tx.hash, receipt }
 }
 
-/**
- * Close an isolated position fully.
- *
- * @param {{ posId: number|bigint }} params
- */
-export async function closePosition({ posId }) {
-  const signer = getSigner()
-  if (!signer) throw new Error('Wallet not connected')
-
-  const { updateData, fee } = await getPythUpdateArgs(signer)
-  const core    = new Contract(ADDRESSES.PERP_CORE, ABI_PERP_CORE, signer)
-  const tx      = await core.closeWithPriceUpdate(posId, updateData, { value: fee })
-  const receipt = await waitTx(tx)
-  return { hash: tx.hash, receipt }
-}
-
-/**
- * Partially close an isolated position (reduce collateral).
- *
- * @param {{ posId: number|bigint, collateralDeltaUsd: number }} params
- */
-export async function partialClose({ posId, collateralDeltaUsd }) {
-  const signer      = getSigner()
-  if (!signer) throw new Error('Wallet not connected')
-  const delta       = parseUnits(String(Number(collateralDeltaUsd).toFixed(18)), 18)
-  const { updateData, fee } = await getPythUpdateArgs(signer)
-  const core        = new Contract(ADDRESSES.PERP_CORE, ABI_PERP_CORE, signer)
-  const tx          = await core.partialCloseWithPriceUpdate(posId, delta, updateData, { value: fee })
-  const receipt     = await waitTx(tx)
-  return { hash: tx.hash, receipt }
-}
-
-/**
- * Fetch all open isolated positions for a given address.
- *
- * @param {string} address
- * @returns {Array<{ id: number, owner: string, assetKey: string, isLong: boolean,
- *   leverage: number, collateral: number, size: number, entryPrice: number,
- *   openTime: number, fundingEntry: number }>}
- */
 export async function fetchPositions(address) {
   const rp = getReadProvider()
   if (!rp) throw new Error('No RPC provider')
-  const store  = new Contract(ADDRESSES.PERP_STORE, ABI_PERP_STORE, rp)
-  const ids    = await store.getUserPositions(address)
-  if (!ids.length) return []
+  const core = new Contract(ADDRESSES.CORE, ABI_PERP_CORE, rp)
 
-  const details = await Promise.allSettled(ids.map((id) => store.getPosition(id)))
-  return details
-    .map((r, i) => ({ posId: ids[i], r }))
-    .filter(({ r }) =>
-      r.status === 'fulfilled' &&
-      r.value?.owner &&
-      r.value.owner !== '0x0000000000000000000000000000000000000000'
-    )
-    .map(({ posId, r: { value: p } }) => ({
-      id:           Number(posId),
-      owner:        p.owner,
-      assetKey:     p.assetKey,
-      isLong:       p.isLong,
-      reduceOnly:   p.reduceOnly,
-      leverage:     Number(p.leverage),
-      collateral:   Number(p.collateral) / 1e18,
-      size:         Number(p.size) / 1e18,
-      entryPrice:   Number(p.entryPrice) / 1e18,
-      openTime:     Number(p.openTime),
-      fundingEntry: Number(p.fundingEntry),
+  const probeIds = MARKETS.flatMap((m) => [
+    core.getPositionId(address, m.key, true,  false),
+    core.getPositionId(address, m.key, false, false),
+  ])
+  const probeResults = await Promise.allSettled(probeIds)
+  const validIds     = probeResults
+    .map((r) => (r.status === 'fulfilled' ? r.value : 0n))
+    .filter((id) => id > 0n)
+
+  if (!validIds.length) return []
+
+  const [detailResults, liqResults] = await Promise.all([
+    Promise.allSettled(validIds.map((id) => core.getPosition(id))),
+    Promise.allSettled(validIds.map((id) => core.getLiquidationPrice(id))),
+  ])
+
+  return detailResults
+    .map((r, i) => ({ posId: validIds[i], r, liq: liqResults[i] }))
+    .filter(({ r }) => r.status === 'fulfilled' && r.value?.isOpen)
+    .map(({ posId, r: { value: p }, liq }) => ({
+      id:          Number(posId),
+      trader:      p.trader,
+      market:      p.market,
+      isLong:      p.isLong,
+      sizeUsd:     Number(p.sizeUsd)    / D_USDC,
+      collateral:  Number(p.collateral) / D_USDC,
+      entryPrice:  Number(p.entryPrice) / D_PRICE,
+      openedAt:    Number(p.openedAt),
+      liqPrice:    liq.status === 'fulfilled' ? Number(liq.value) / D_PRICE : null,
     }))
 }

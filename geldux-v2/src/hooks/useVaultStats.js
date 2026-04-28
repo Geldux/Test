@@ -1,7 +1,10 @@
 import { useState, useEffect } from 'react'
 import { Contract } from 'ethers'
-import { ADDRESSES, ABI_PERP_VAULT } from '@/config/contracts'
+import { ADDRESSES, ABI_VAULT } from '@/config/contracts'
+import { USDC_DECIMALS } from '@/config/chain'
 import { getReadProvider } from './useWallet'
+
+const D_USDC = 10 ** USDC_DECIMALS
 
 export function useVaultStats() {
   const [stats,   setStats]   = useState(null)
@@ -14,20 +17,20 @@ export function useVaultStats() {
       if (!rp) return
       setLoading(true)
       try {
-        const vault = new Contract(ADDRESSES.PERP_VAULT, ABI_PERP_VAULT, rp)
-        const [freeRes, reservedRes] = await Promise.allSettled([
-          vault.freeBalance(),
-          vault.reservedCollateral(),
+        const vault = new Contract(ADDRESSES.VAULT, ABI_VAULT, rp)
+        const [totalRes, insuranceRes, feeRes] = await Promise.allSettled([
+          vault.totalBalance(),
+          vault.insuranceFund(),
+          vault.feeAccrued(),
         ])
-        if (freeRes.status === 'rejected')
-          console.warn('[useVaultStats] freeBalance failed:', freeRes.reason?.message ?? freeRes.reason)
-        if (reservedRes.status === 'rejected')
-          console.warn('[useVaultStats] reservedCollateral failed:', reservedRes.reason?.message ?? reservedRes.reason)
+        if (totalRes.status === 'rejected')
+          console.warn('[useVaultStats] totalBalance failed:', totalRes.reason?.message ?? totalRes.reason)
         if (!alive) return
-        if (freeRes.status === 'fulfilled' && reservedRes.status === 'fulfilled') {
+        if (totalRes.status === 'fulfilled') {
           setStats({
-            freeBalance:        Number(freeRes.value)     / 1e18,
-            reservedCollateral: Number(reservedRes.value) / 1e18,
+            totalBalance:  Number(totalRes.value)     / D_USDC,
+            insuranceFund: insuranceRes.status === 'fulfilled' ? Number(insuranceRes.value) / D_USDC : null,
+            feeAccrued:    feeRes.status        === 'fulfilled' ? Number(feeRes.value)        / D_USDC : null,
           })
         }
       } catch (e) {

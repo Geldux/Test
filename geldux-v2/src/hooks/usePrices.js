@@ -2,13 +2,13 @@ import { useState, useEffect, useRef } from 'react'
 import { Contract } from 'ethers'
 import { HERMES_URL } from '@/config/chain'
 import { MARKETS, PYTH_IDS } from '@/config/markets'
-import { ADDRESSES, ABI_PERP_CONFIG, ABI_PYTH } from '@/config/contracts'
+import { ADDRESSES, ABI_ORACLE, ABI_PERP_CORE } from '@/config/contracts'
 import { getReadProvider } from './useWallet'
 
 /* Module-level price cache — shared across hook instances */
-const _prices   = {}   /* sym → { price, conf, publishTime } */
+const _prices   = {}   /* sym → { price, markLong, markShort, publishTime } */
 const _oi       = {}   /* sym → { longOI, shortOI } */
-const _funding  = {}   /* sym → fundingRate (number) */
+const _funding  = {}   /* sym → fundingRate (number, 1e18-scaled per day) */
 let   _listeners = []
 
 function notify() { _listeners.forEach((fn) => fn({ ..._prices }, { ..._oi }, { ..._funding })) }
@@ -19,10 +19,10 @@ async function fetchHermesPrices() {
   try {
     const res  = await fetch(url, { signal: AbortSignal.timeout(4000) })
     if (!res.ok) {
-      console.warn('[usePrices] Hermes returned HTTP', res.status, '— prices not updated')
+      console.warn('[usePrices] Hermes returned HTTP', res.status)
       return
     }
-    const data = await res.json()
+    const data   = await res.json()
     const parsed = data?.parsed || []
     const now    = Math.floor(Date.now() / 1000)
     parsed.forEach((entry) => {
@@ -30,8 +30,9 @@ async function fetchHermesPrices() {
       if (!sym) return
       const { price, expo, publish_time } = entry.price
       const age = now - publish_time
-      if (age > 60) console.warn(`[usePrices] ${sym} price is stale: ${age}s old (publishTime ${publish_time})`)
+      if (age > 60) console.warn(`[usePrices] ${sym} Hermes price stale: ${age}s`)
       _prices[sym] = {
+        ..._prices[sym],
         price:       Number(price) * Math.pow(10, Number(expo)),
         publishTime: publish_time,
       }
@@ -46,56 +47,46 @@ async function fetchOnChainData() {
   const rp = getReadProvider()
   if (!rp) { console.warn('[usePrices] fetchOnChainData: no read provider'); return }
   try {
-    const cfg = new Contract(ADDRESSES.PERP_CONFIG, ABI_PERP_CONFIG, rp)
+    const oracle = new Contract(ADDRESSES.ORACLE, ABI_ORACLE,    rp)
+    const core   = new Contract(ADDRESSES.CORE,   ABI_PERP_CORE, rp)
+
     await Promise.allSettled(
       MARKETS.map(async (m) => {
+        /* Price from GelduxOracle */
         try {
-          /* Fetch both directional mark prices in parallel.
-             forLong=true  → BID — the price long  positions are marked/valued at (close-side for longs)
-             forLong=false → ASK — the price short positions are marked/valued at (close-side for shorts)
-             markLong  = BID (lower);  markShort = ASK (higher).
-             Longs open at ASK (markShort); longs close/display at BID (markLong). */
-          const [markLongRaw, markShortRaw] = await Promise.all([
-            cfg.getMarkPrice(m.key, true),
-            cfg.getMarkPrice(m.key, false),
-          ])
-          const markLong  = markLongRaw  ? Number(markLongRaw)  / 1e18 : 0
-          const markShort = markShortRaw ? Number(markShortRaw) / 1e18 : 0
-          if (markLong > 0 || markShort > 0) {
-            _prices[m.sym] = { ..._prices[m.sym], markLong, markShort }
-            if (markLong > 0 && markShort > 0 && Math.abs(markShort - markLong) / markLong > 0.0001) {
-              /* markLong=BID (lower), markShort=ASK (higher): spread = ASK - BID */
-              console.log(`[usePrices] ${m.sym} bid/ask spread: bid(markLong)=${markLong.toFixed(6)} ask(markShort)=${markShort.toFixed(6)} spread=${((markShort - markLong) / markLong * 100).toFixed(4)}%`)
+          const { price, publishTime } = await oracle.getPriceUnsafe(m.key)
+          const priceNum = Number(price) / 1e18
+          if (priceNum > 0) {
+            _prices[m.sym] = {
+              ..._prices[m.sym],
+              markLong:    priceNum,
+              markShort:   priceNum,
+              publishTime: Number(publishTime),
             }
           }
         } catch (e) {
-          console.warn(`[usePrices] ${m.sym} getMarkPrice failed (likely stale on-chain Pyth):`, e?.message ?? e)
-          /* getIndexPrice may use getPriceUnsafe internally — succeeds even when on-chain
-             Pyth is stale (no active price updater on testnet between trades).
-             We get a single price with no bid/ask spread, but it's better than leaving
-             markLong/markShort at 0, which forces the UI to fall back to Hermes mid. */
+          console.warn(`[usePrices] ${m.sym} oracle.getPriceUnsafe failed:`, e?.message ?? e)
           try {
-            const indexRaw = await cfg.getIndexPrice(m.key)
-            const index = indexRaw ? Number(indexRaw) / 1e18 : 0
-            if (index > 0) {
-              _prices[m.sym] = { ..._prices[m.sym], markLong: index, markShort: index }
-              console.log(`[usePrices] ${m.sym} mark fallback → getIndexPrice: ${index.toFixed(6)} (no spread)`)
+            const priceRaw = await oracle.getPrice(m.key)
+            const priceNum = Number(priceRaw) / 1e18
+            if (priceNum > 0) {
+              _prices[m.sym] = { ..._prices[m.sym], markLong: priceNum, markShort: priceNum }
             }
-          } catch (ie) {
-            console.warn(`[usePrices] ${m.sym} getIndexPrice also failed:`, ie?.message ?? ie)
+          } catch (e2) {
+            console.warn(`[usePrices] ${m.sym} oracle.getPrice also failed:`, e2?.message ?? e2)
           }
         }
+
+        /* OI and funding from GelduxPerpCore.getMarket */
         try {
-          const fundRaw = await cfg.computeFundingRate(m.key)
-          _funding[m.sym] = Number(fundRaw) / 1e18
+          const mkt = await core.getMarket(m.key)
+          _oi[m.sym] = {
+            longOI:  Number(mkt.longOI)  / 1e6,
+            shortOI: Number(mkt.shortOI) / 1e6,
+          }
+          _funding[m.sym] = Number(mkt.fundingRate) / 1e18
         } catch (e) {
-          console.warn(`[usePrices] ${m.sym} funding fetch failed:`, e?.message ?? e)
-        }
-        try {
-          const [lo, so] = await cfg.getOI(m.key)
-          _oi[m.sym] = { longOI: Number(lo) / 1e18, shortOI: Number(so) / 1e18 }
-        } catch (e) {
-          console.warn(`[usePrices] ${m.sym} OI fetch failed:`, e?.message ?? e)
+          console.warn(`[usePrices] ${m.sym} core.getMarket failed:`, e?.message ?? e)
         }
       })
     )
@@ -105,11 +96,9 @@ async function fetchOnChainData() {
   }
 }
 
-/* Cached VAA binary data — used only when fresh=false (non-trade paths) */
+/* Cached VAA binary data — used when fresh=false (non-trade paths) */
 let _vaaCache = { data: [], ts: 0 }
 
-/* fresh=true: always fetch a new VAA from Hermes (required for actual trade submission).
-   fresh=false: reuse cached data if < 8 s old (cross StalePrice update retry only). */
 export async function fetchVaas(pythIds, { fresh = false } = {}) {
   const now = Date.now()
   if (!fresh && now - _vaaCache.ts < 8000 && _vaaCache.data.length) return _vaaCache.data
@@ -121,29 +110,23 @@ export async function fetchVaas(pythIds, { fresh = false } = {}) {
   if (!res.ok) throw new Error(`Hermes VAA fetch failed: HTTP ${res.status}`)
   const data = await res.json()
   const vaas = (data?.binary?.data || []).map((d) => '0x' + d)
-  if (!vaas.length) throw new Error('Hermes returned empty VAA list — cannot update oracle price')
+  if (!vaas.length) throw new Error('Hermes returned empty VAA list')
   _vaaCache = { data: vaas, ts: now }
-  /* Sync the display price cache with the price embedded in this VAA so the
-     entry preview and the actual on-chain entry price come from the same feed
-     response.  getCurrentPrice() after fetchVaas returns this synced value. */
+  /* Sync display prices with the prices embedded in this VAA */
   const parsed = data?.parsed ?? []
-  if (parsed.length > 0) {
-    for (const entry of parsed) {
-      const sym = Object.entries(PYTH_IDS).find(([, id]) => entry.id === id.slice(2))?.[0]
-      if (!sym) continue
-      const { price, expo, publish_time } = entry.price
-      const priceNum = Number(price) * Math.pow(10, Number(expo))
-      if (priceNum > 0) {
-        _prices[sym] = { ..._prices[sym], price: priceNum, publishTime: publish_time }
-      }
+  for (const entry of parsed) {
+    const sym = Object.entries(PYTH_IDS).find(([, id]) => entry.id === id.slice(2))?.[0]
+    if (!sym) continue
+    const { price, expo, publish_time } = entry.price
+    const priceNum = Number(price) * Math.pow(10, Number(expo))
+    if (priceNum > 0) {
+      _prices[sym] = { ..._prices[sym], price: priceNum, publishTime: publish_time }
     }
-    notify()
   }
+  if (parsed.length > 0) notify()
   return vaas
 }
 
-/* Snapshot of module-level price cache for a single symbol.
-   Used by useTrading for diagnostic logging at trade time. */
 export function getCurrentPrice(sym) {
   return _prices[sym] ? { ..._prices[sym] } : null
 }

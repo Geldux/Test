@@ -47,11 +47,9 @@ export const BASE_CHAIN_PARAMS = {
   blockExplorerUrls: [EXPLORER],
 }
 
-/* NOTE: The testnet USDC deployed at ADDRESSES.USDC uses 18 decimals.
-   Standard Circle USDC uses 6 decimals. All amount parsing in this repo
-   uses parseUnits(..., 18) and all division uses 1e18. Do NOT change this
-   without also updating every contract interaction that touches USDC amounts. */
-export const USDC_DECIMALS  = 18
+/* GelduxUSDC uses 6 decimals (standard ERC-20 USDC). All amount parsing
+   uses parseUnits(..., 6) and all division uses 1e6. */
+export const USDC_DECIMALS  = 6
 export const PRICE_DECIMALS = 18  /* Pyth / PerpConfig prices are 1e18 per USD */
 
 export const PERMIT_DEADLINE_SECONDS = 3600  /* 1 hour from now */

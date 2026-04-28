@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react'
 import { Contract, formatUnits } from 'ethers'
 import { MARKETS, LEVERAGE_MARKS } from '@/config/markets'
-import { ADDRESSES, ABI_USDC, ABI_PERP_CONFIG } from '@/config/contracts'
+import { ADDRESSES, ABI_USDC } from '@/config/contracts'
+import { USDC_DECIMALS } from '@/config/chain'
 import { fmtPriceRaw, fmtUsdc, estLiqPrice } from '@/utils/format'
 import { getProvider, getReadProvider } from '@/hooks/useWallet'
 import { getLiveOpenPreviewMark } from '@/utils/priceUtils'
@@ -22,7 +23,7 @@ function useUsdcBalance(account, refreshKey) {
       }
       try {
         const raw = await new Contract(ADDRESSES.USDC, ABI_USDC, provider).balanceOf(account)
-        if (!cancelled) setBal(parseFloat(formatUnits(raw, 18)))
+        if (!cancelled) setBal(parseFloat(formatUnits(raw, USDC_DECIMALS)))
       } catch (e) {
         console.error('[useUsdcBalance] balanceOf FAILED:', e?.message ?? e, e)
       }
@@ -34,21 +35,9 @@ function useUsdcBalance(account, refreshKey) {
   return bal
 }
 
-/* ── On-chain feeBps hook ───────────────────────────────────────── */
+/* ── On-chain feeBps hook — V2 fee is implicit; use hardcoded default ── */
 function useFeeBps() {
-  const [feeBps, setFeeBps] = useState(45) /* 45 bps = 0.045% default */
-  useEffect(() => {
-    const rp = getReadProvider()
-    if (!rp) return
-    new Contract(ADDRESSES.PERP_CONFIG, ABI_PERP_CONFIG, rp)
-      .feeBps()
-      .then((raw) => {
-        const bps = Number(raw)
-        console.log('[TradingPanel] on-chain feeBps:', bps, '=', (bps / 100).toFixed(3) + '%')
-        if (bps >= 0) setFeeBps(bps)
-      })
-      .catch((e) => console.warn('[TradingPanel] feeBps() read failed — using default 45 bps:', e?.message))
-  }, [])
+  const [feeBps] = useState(45) /* 45 bps = 0.045% */
   return feeBps
 }
 

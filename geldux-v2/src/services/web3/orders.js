@@ -1,18 +1,15 @@
 /**
- * Order management service — OrderManager interactions.
+ * Order service — GelduxOrderRouter interactions (Perp V2).
  *
- * createLimitOrder()   place a new limit open order (requires USDC approval)
- * createStopLoss()     attach a stop-loss to an existing position
- * createTakeProfit()   attach a take-profit to an existing position
- * cancelOrder()        cancel an active order and reclaim execution fee
- * executeOrder()       execute a triggered order (keeper pattern — caller earns executionFee)
- * fetchOrders()        read all active orders for an address
+ * V2 orders are submitted off-chain (EIP-712 signed) and executed by keepers.
+ * The only on-chain action available to traders is cancelOrder(nonce).
+ *
+ * cancelOrder()    cancel a pending order by nonce (reclaims execution ETH)
+ * fetchOrders()    stub — V2 order state lives off-chain; returns empty array
  */
-import { Contract, parseUnits } from 'ethers'
-import { ADDRESSES, ABI_ORDER_MANAGER, ABI_USDC } from '@/config/contracts'
-import { MARKETS } from '@/config/markets'
+import { Contract } from 'ethers'
+import { ADDRESSES, ABI_ROUTER } from '@/config/contracts'
 import { getSigner, getReadProvider } from './wallet'
-import { getPythUpdateArgs } from './oracle'
 
 async function waitTx(tx) {
   const receipt = await tx.wait(1)
@@ -20,152 +17,15 @@ async function waitTx(tx) {
   return receipt
 }
 
-async function ensureUsdcApproval(signer, spender, amount) {
-  const usdc = new Contract(ADDRESSES.USDC, ABI_USDC, signer)
-  const addr = await signer.getAddress()
-  const have = await usdc.allowance(addr, spender)
-  if (have < amount) {
-    const tx = await usdc.approve(
-      spender,
-      BigInt('0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff')
-    )
-    await waitTx(tx)
-  }
-}
-
-/**
- * Place a limit open order.
- * Requires USDC approval for the collateral amount (auto-approved if needed).
- * An ETH execution fee (minExecFee) is paid to the keeper.
- *
- * @param {{ sym: string, isLong: boolean, leverage: number,
- *            collateralUsd: number, triggerPrice: number }} params
- */
-export async function createLimitOrder({ sym, isLong, leverage, collateralUsd, triggerPrice }) {
-  const signer = getSigner()
-  if (!signer) throw new Error('Wallet not connected')
-  const market = MARKETS.find((m) => m.sym === sym)
-  if (!market)  throw new Error(`Unknown market: ${sym}`)
-  const cRaw   = parseUnits(String(Number(collateralUsd).toFixed(18)), 18)
-  const tRaw   = parseUnits(String(Number(triggerPrice).toFixed(18)), 18)
-  const mgr    = new Contract(ADDRESSES.ORDER_MANAGER, ABI_ORDER_MANAGER, signer)
-
-  await ensureUsdcApproval(signer, ADDRESSES.ORDER_MANAGER, cRaw)
-
-  const minFee  = await mgr.minExecFee()
-  const tx      = await mgr.createLimitOrder(
-    market.key, isLong, leverage, cRaw, false, tRaw, { value: minFee }
-  )
-  const receipt = await waitTx(tx)
-  return { hash: tx.hash, receipt }
-}
-
-/**
- * Attach a stop-loss to an open position.
- *
- * @param {{ posId: number|bigint, triggerPrice: number, fractionBps?: number }} params
- *   fractionBps: how much of the position to close when triggered (10000 = 100%)
- */
-export async function createStopLoss({ posId, triggerPrice, fractionBps = 10000 }) {
+export async function cancelOrder({ nonce }) {
   const signer  = getSigner()
   if (!signer) throw new Error('Wallet not connected')
-  const tRaw    = parseUnits(String(Number(triggerPrice).toFixed(18)), 18)
-  const mgr     = new Contract(ADDRESSES.ORDER_MANAGER, ABI_ORDER_MANAGER, signer)
-  const minFee  = await mgr.minExecFee()
-  const tx      = await mgr.createStopLoss(posId, tRaw, fractionBps, { value: minFee })
+  const router  = new Contract(ADDRESSES.ROUTER, ABI_ROUTER, signer)
+  const tx      = await router.cancelOrder(nonce)
   const receipt = await waitTx(tx)
   return { hash: tx.hash, receipt }
 }
 
-/**
- * Attach a take-profit to an open position.
- *
- * @param {{ posId: number|bigint, triggerPrice: number, fractionBps?: number }} params
- */
-export async function createTakeProfit({ posId, triggerPrice, fractionBps = 10000 }) {
-  const signer  = getSigner()
-  if (!signer) throw new Error('Wallet not connected')
-  const tRaw    = parseUnits(String(Number(triggerPrice).toFixed(18)), 18)
-  const mgr     = new Contract(ADDRESSES.ORDER_MANAGER, ABI_ORDER_MANAGER, signer)
-  const minFee  = await mgr.minExecFee()
-  const tx      = await mgr.createTakeProfit(posId, tRaw, fractionBps, { value: minFee })
-  const receipt = await waitTx(tx)
-  return { hash: tx.hash, receipt }
-}
-
-/**
- * Cancel an active order. Reclaims the execution fee.
- *
- * @param {{ orderId: number|bigint }} params
- */
-export async function cancelOrder({ orderId }) {
-  const signer  = getSigner()
-  if (!signer) throw new Error('Wallet not connected')
-  const mgr     = new Contract(ADDRESSES.ORDER_MANAGER, ABI_ORDER_MANAGER, signer)
-  const tx      = await mgr.cancelOrder(orderId)
-  const receipt = await waitTx(tx)
-  return { hash: tx.hash, receipt }
-}
-
-/**
- * Execute a triggered order.
- * Callable by anyone — the caller earns the order's executionFee.
- * The trigger condition (triggerAbove ? price >= triggerPrice : price <= triggerPrice)
- * is evaluated on-chain; the tx will revert if the condition is not yet met.
- *
- * @param {{ orderId: number|bigint }} params
- * @returns {{ hash: string, receipt: object }}
- */
-export async function executeOrder({ orderId }) {
-  const signer = getSigner()
-  if (!signer) throw new Error('Wallet not connected')
-  const mgr = new Contract(ADDRESSES.ORDER_MANAGER, ABI_ORDER_MANAGER, signer)
-
-  /* Fetch the order to get the assetKey, then resolve the Pyth price update */
-  const order = await mgr.getOrder(orderId)
-  if (!order.active) throw new Error(`Order ${orderId} is not active`)
-
-  const market = MARKETS.find((m) => m.key === order.assetKey)
-  if (!market) throw new Error(`No market found for assetKey ${order.assetKey}`)
-
-  const { updateData, fee } = await getPythUpdateArgs(signer)
-
-  const tx = await mgr.executeOrder(orderId, updateData, { value: fee })
-  const receipt = await waitTx(tx)
-  return { hash: tx.hash, receipt }
-}
-
-/**
- * Fetch all active orders for an address.
- *
- * @param {string} address
- * @returns {Array<{ id, assetKey, orderType, isLong, leverage, collateral,
- *   triggerPrice, fractionBps, posId, active, executionFee }>}
- */
-export async function fetchOrders(address) {
-  const rp  = getReadProvider()
-  if (!rp) throw new Error('No RPC provider')
-  const mgr = new Contract(ADDRESSES.ORDER_MANAGER, ABI_ORDER_MANAGER, rp)
-
-  const ids = await mgr.traderOrders(address)
-  if (!ids.length) return []
-
-  const rawOrders = await Promise.allSettled(ids.map((id) => mgr.getOrder(id)))
-  return rawOrders
-    .map((r) => (r.status === 'fulfilled' ? r.value : null))
-    .filter((o) => o && o.active)
-    .map((o) => ({
-      id:           Number(o.id),
-      assetKey:     o.assetKey,
-      orderType:    Number(o.orderType),  /* 0=limit, 1=stopLoss, 2=takeProfit */
-      isLong:       o.isLong,
-      leverage:     Number(o.leverage),
-      collateral:   Number(o.collateral)   / 1e18,
-      triggerPrice: Number(o.triggerPrice) / 1e18,
-      fractionBps:  Number(o.fractionBps),
-      posId:        Number(o.posId),
-      triggerAbove: o.triggerAbove,
-      active:       o.active,
-      executionFee: Number(o.executionFee),
-    }))
+export async function fetchOrders() {
+  return []
 }

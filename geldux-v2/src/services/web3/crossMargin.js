@@ -1,18 +1,21 @@
-/**
- * Cross-margin service — CrossMarginManager interactions.
- *
- * depositWithPermit()  1-click USDC deposit via EIP-2612 permit
- * withdraw()           withdraw USDC from cross margin balance
- * openPosition()       open a cross-margin position
- * increasePosition()   add collateral to an existing cross position
- * closePosition()      close (fully or partial) a cross position
- * fetchAccount()       read cross margin balance, equity, and positions
- */
 import { Contract, parseUnits } from 'ethers'
-import { ADDRESSES, ABI_CROSS_MARGIN } from '@/config/contracts'
+import { ADDRESSES, ABI_PERP_CORE } from '@/config/contracts'
 import { MARKETS } from '@/config/markets'
+import { USDC_DECIMALS, PRICE_DECIMALS } from '@/config/chain'
 import { getSigner, getReadProvider } from './wallet'
 import { signPermit } from './usdcPermit'
+import { getPythUpdateArgs } from './oracle'
+
+const D_USDC  = 10 ** USDC_DECIMALS
+const D_PRICE = 10 ** PRICE_DECIMALS
+const SLIPPAGE = 0.01
+
+function _accPrice(markPrice, isLong, isOpen) {
+  if (!markPrice) return 0n
+  const wantMax = (isLong && isOpen) || (!isLong && !isOpen)
+  const price   = wantMax ? markPrice * (1 + SLIPPAGE) : markPrice * (1 - SLIPPAGE)
+  return parseUnits(price.toFixed(18), 18)
+}
 
 async function waitTx(tx) {
   const receipt = await tx.wait(1)
@@ -20,110 +23,92 @@ async function waitTx(tx) {
   return receipt
 }
 
-/**
- * Deposit USDC to cross margin with a single permit signature.
- *
- * @param {{ amountUsd: number }} params
- */
 export async function depositWithPermit({ amountUsd }) {
   const signer  = getSigner()
   if (!signer) throw new Error('Wallet not connected')
-  const amtRaw  = parseUnits(String(Number(amountUsd).toFixed(18)), 18)
-  const permit  = await signPermit(signer, ADDRESSES.CROSS_MARGIN, amtRaw)
-  const cross   = new Contract(ADDRESSES.CROSS_MARGIN, ABI_CROSS_MARGIN, signer)
-  const tx      = await cross.depositWithPermit(amtRaw, permit.deadline, permit.v, permit.r, permit.s)
+  const amtRaw  = parseUnits(String(Number(amountUsd).toFixed(USDC_DECIMALS)), USDC_DECIMALS)
+  /* V2: permit spender = CORE */
+  const permit  = await signPermit(signer, ADDRESSES.CORE, amtRaw)
+  const core    = new Contract(ADDRESSES.CORE, ABI_PERP_CORE, signer)
+  const tx      = await core.depositCrossWithPermit(amtRaw, permit.deadline, permit.v, permit.r, permit.s)
   const receipt = await waitTx(tx)
   return { hash: tx.hash, receipt }
 }
 
-/**
- * Withdraw USDC from cross margin balance.
- *
- * @param {{ amountUsd: number }} params
- */
-export async function withdraw({ amountUsd }) {
+export async function withdraw({ amountUsd, markPrices = {} }) {
   const signer  = getSigner()
   if (!signer) throw new Error('Wallet not connected')
-  const amtRaw  = parseUnits(String(Number(amountUsd).toFixed(18)), 18)
-  const cross   = new Contract(ADDRESSES.CROSS_MARGIN, ABI_CROSS_MARGIN, signer)
-  const tx      = await cross.withdraw(amtRaw)
+  const amtRaw  = parseUnits(String(Number(amountUsd).toFixed(USDC_DECIMALS)), USDC_DECIMALS)
+  const { updateData, fee } = await getPythUpdateArgs(signer)
+  const core    = new Contract(ADDRESSES.CORE, ABI_PERP_CORE, signer)
+  const tx      = await core.withdrawCross(amtRaw, updateData, { value: fee })
   const receipt = await waitTx(tx)
   return { hash: tx.hash, receipt }
 }
 
-/**
- * Open a cross-margin position.
- * Collateral is drawn from the cross margin account balance.
- *
- * @param {{ sym: string, isLong: boolean, leverage: number, collateralUsd: number }} params
- */
-export async function openPosition({ sym, isLong, leverage, collateralUsd }) {
+export async function openPosition({ sym, isLong, leverage, collateralUsd, markPrice }) {
   const signer = getSigner()
   if (!signer) throw new Error('Wallet not connected')
   const market = MARKETS.find((m) => m.sym === sym)
   if (!market) throw new Error(`Unknown market: ${sym}`)
-  const cRaw   = parseUnits(String(Number(collateralUsd).toFixed(18)), 18)
-  const cross  = new Contract(ADDRESSES.CROSS_MARGIN, ABI_CROSS_MARGIN, signer)
-  const tx     = await cross.openPosition(market.key, isLong, leverage, cRaw, false)
+  const sizeUsdRaw  = parseUnits(
+    String((Number(collateralUsd) * Number(leverage)).toFixed(USDC_DECIMALS)),
+    USDC_DECIMALS
+  )
+  const accPrice            = _accPrice(markPrice, isLong, true)
+  const { updateData, fee } = await getPythUpdateArgs(signer)
+  const core                = new Contract(ADDRESSES.CORE, ABI_PERP_CORE, signer)
+  const tx      = await core.openCrossWithPriceUpdate(market.key, isLong, sizeUsdRaw, accPrice, updateData, { value: fee })
   const receipt = await waitTx(tx)
   const event   = receipt.logs
-    ?.map((log) => { try { return cross.interface.parseLog(log) } catch { return null } })
-    ?.find((e) => e?.name === 'PositionOpened')
+    ?.map((log) => { try { return core.interface.parseLog(log) } catch { return null } })
+    ?.find((e) => e?.name === 'CrossPositionOpened')
   return { hash: tx.hash, receipt, posId: event?.args?.posId }
 }
 
-/**
- * Add collateral to an existing cross-margin position.
- *
- * @param {{ posId: number|bigint, extraUsd: number }} params
- */
-export async function increasePosition({ posId, extraUsd }) {
+export async function increasePosition({ sym, isLong, addSizeUsd, markPrice }) {
   const signer  = getSigner()
   if (!signer) throw new Error('Wallet not connected')
-  const extra   = parseUnits(String(Number(extraUsd).toFixed(18)), 18)
-  const cross   = new Contract(ADDRESSES.CROSS_MARGIN, ABI_CROSS_MARGIN, signer)
-  const tx      = await cross.increasePosition(posId, extra)
+  const market  = MARKETS.find((m) => m.sym === sym)
+  if (!market)  throw new Error(`Unknown market: ${sym}`)
+  const addSizeRaw          = parseUnits(String(Number(addSizeUsd).toFixed(USDC_DECIMALS)), USDC_DECIMALS)
+  const accPrice            = _accPrice(markPrice, isLong, true)
+  const { updateData, fee } = await getPythUpdateArgs(signer)
+  const core    = new Contract(ADDRESSES.CORE, ABI_PERP_CORE, signer)
+  const tx      = await core.increaseCrossWithPriceUpdate(market.key, isLong, addSizeRaw, accPrice, updateData, { value: fee })
   const receipt = await waitTx(tx)
   return { hash: tx.hash, receipt }
 }
 
-/**
- * Close a cross-margin position fully or partially.
- *
- * @param {{ posId: number|bigint, fractionBps?: number }} params
- *   fractionBps: 10000 = 100% (full close), 5000 = 50%, etc.
- */
-export async function closePosition({ posId, fractionBps = 10000 }) {
+export async function closePosition({ sym, isLong, markPrice }) {
   const signer  = getSigner()
   if (!signer) throw new Error('Wallet not connected')
-  const cross   = new Contract(ADDRESSES.CROSS_MARGIN, ABI_CROSS_MARGIN, signer)
-  const tx      = await cross.closePosition(posId, fractionBps)
+  const market  = MARKETS.find((m) => m.sym === sym)
+  if (!market)  throw new Error(`Unknown market: ${sym}`)
+  const accPrice            = _accPrice(markPrice, isLong, false)
+  const { updateData, fee } = await getPythUpdateArgs(signer)
+  const core    = new Contract(ADDRESSES.CORE, ABI_PERP_CORE, signer)
+  const tx      = await core.closeCrossWithPriceUpdate(market.key, isLong, accPrice, updateData, { value: fee })
   const receipt = await waitTx(tx)
   return { hash: tx.hash, receipt }
 }
 
-/**
- * Read the cross margin account state for an address.
- *
- * @param {string} address
- * @returns {{ balance: number, posIds: number[], equity: number, marginUsed: number, freeMargin: number }}
- */
 export async function fetchAccount(address) {
   const rp = getReadProvider()
   if (!rp) throw new Error('No RPC provider')
-  const cross = new Contract(ADDRESSES.CROSS_MARGIN, ABI_CROSS_MARGIN, rp)
+  const core = new Contract(ADDRESSES.CORE, ABI_PERP_CORE, rp)
 
-  const [[balance, posIds], equity, mm] = await Promise.all([
-    cross.getAccount(address),
-    cross.accountEquity(address).catch(() => 0n),
-    cross.accountMM(address).catch(() => 0n),
+  const [collateralRes, posIdsRes, equityRes, freeMarginRes] = await Promise.allSettled([
+    core.crossCollateral(address),
+    core.getCrossPositions(address),
+    core.getCrossAccountEquity(address),
+    core.getCrossFreeMargin(address),
   ])
 
-  return {
-    balance:    Number(balance) / 1e18,
-    posIds:     posIds.map((id) => Number(id)),
-    equity:     Number(equity) / 1e18,
-    marginUsed: Number(mm) / 1e18,
-    freeMargin: Math.max(0, Number(equity) / 1e18 - Number(mm) / 1e18),
-  }
+  const balance    = collateralRes.status === 'fulfilled' ? Number(collateralRes.value) / D_USDC : 0
+  const posIds     = posIdsRes.status     === 'fulfilled' ? posIdsRes.value.map((id) => Number(id)) : []
+  const equity     = equityRes.status     === 'fulfilled' ? Number(equityRes.value)     / D_USDC : null
+  const freeMargin = freeMarginRes.status === 'fulfilled' ? Number(freeMarginRes.value) / D_USDC : null
+
+  return { balance, posIds, equity, freeMargin, marginUsed: equity != null && freeMargin != null ? equity - freeMargin : null }
 }
